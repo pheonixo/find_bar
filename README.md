@@ -12,4 +12,5 @@ mount atop a textview area. It provides find and replace abilities for
 a text buffer.
 
   3 Nov 23. Altered code to fix popup. Went from TOP_MOST to POPUP had
-altered event behavior, which found workaround.
+altered event behavior, which found workaround. Could not figure workarounds
+on gtk tags multiline display, nor scroll abilities to a selection.
