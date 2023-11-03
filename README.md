@@ -10,3 +10,6 @@ complete. The DnD is internal only.
 use of a find bar using Gtk. It creates a find bar intended to
 mount atop a textview area. It provides find and replace abilities for
 a text buffer.
+
+  3 Nov 23. Altered code to fix popup. Went from TOP_MOST to POPUP had
+altered event behavior, which found workaround.
