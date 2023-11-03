@@ -30,6 +30,23 @@ sensitive_get(PhxObject *obj) {
   return ((obj->state & (0x00000001U << (VISUAL + 1))) == 0);
 }
 
+/* Allows shutting off of button outlines */
+static void
+frame_draw_set(PhxObject *obj, _Bool draws) {
+    // must be visiable
+  if (visible_get(obj)) {
+    if (draws)
+      obj->state &= ~(0x00000001U << (VISUAL + 2));
+    else
+      obj->state |= (0x00000001U << (VISUAL + 2));
+  }
+}
+
+static __inline__ _Bool
+frame_draw_get(PhxObject *obj) {
+  return ((obj->state & (0x00000001U << (VISUAL + 2))) == 0);
+}
+
 #pragma mark *** TextMarks ***
 
 #if USE_MARKS
@@ -1084,16 +1101,20 @@ text_buffer_apply_search_tag(LCIFindPort *fport, struct _fsearch *searches) {
   LCITextPort *active = ea->editor_view[0];
   GtkTextIter insert, release;
   GtkTextBuffer *tbuf = GTK_TEXT_BUFFER(active->textbuffer);
-  int majdx = searches->qdx >> 5;
-  int mnrdx = searches->qdx & ~(-1 << 5);
-  int offset = (searches->q_results + majdx)->qoffsets[mnrdx];
-  gtk_text_buffer_get_iter_at_offset(tbuf, &insert, offset);
-  PhxObjectTextview *key_object
-         = (PhxObjectTextview*)fport->object_list[textview_find_box];
-  offset += key_object->str_nil;
-  gtk_text_buffer_get_iter_at_offset(tbuf, &release, offset);
-  gtk_text_buffer_select_range(tbuf, (const GtkTextIter*)&insert,
-                                     (const GtkTextIter*)&release);
+
+  gtk_text_buffer_get_selection_bounds(tbuf, &insert, &release);
+  if (searches->search_string != NULL) {
+    int majdx = searches->qdx >> 5;
+    int mnrdx = searches->qdx & ~(-1 << 5);
+    int offset = (searches->q_results + majdx)->qoffsets[mnrdx];
+    gtk_text_buffer_get_iter_at_offset(tbuf, &insert, offset);
+    PhxObjectTextview *key_object
+           = (PhxObjectTextview*)fport->object_list[textview_find_box];
+    offset += key_object->str_nil;
+    gtk_text_buffer_get_iter_at_offset(tbuf, &release, offset);
+    gtk_text_buffer_select_range(tbuf, (const GtkTextIter*)&insert,
+                                       (const GtkTextIter*)&release);
+  }
   gtk_text_view_scroll_to_iter(
               GTK_TEXT_VIEW(active->textview), &insert, 0.0, TRUE, 0.5, 0.5);
 }
@@ -1387,17 +1408,18 @@ draw_button(PhxObject *b, cairo_t *cr) {
                 radius, 180 * degrees, 270 * degrees);
   cairo_close_path(cr);
 
-  cairo_set_source_rgba(cr, 0.94, 0.94, 0.94, 1);
-  cairo_fill_preserve(cr);
-
-  if ((button->state & 1) == 1) {
+  if ((button->state & 1) == 1)
     cairo_set_source_rgb(cr, 0.5, 0.5, 0.5);
+  else
+    cairo_set_source_rgba(cr, 0.94, 0.94, 0.94, 1);
+  if (frame_draw_get((PhxObject*)button)) {
     cairo_fill_preserve(cr);
+    cairo_set_source_rgba(cr, 0, 0, 0, 1);
+    cairo_set_line_width(cr, line_width);
+    cairo_stroke(cr);
+  } else {
+    cairo_fill(cr);
   }
-
-  cairo_set_source_rgba(cr, 0, 0, 0, 1);
-  cairo_set_line_width(cr, line_width);
-  cairo_stroke(cr);
 
     // shade bottom
   cairo_set_source_rgba(cr, 0.7, 0.7, 0.7, 0.25);
@@ -1406,7 +1428,7 @@ draw_button(PhxObject *b, cairo_t *cr) {
 }
 
 static void
-draw_button_combo_arrows(PhxObject *b, cairo_t *cr) {
+draw_combo_arrows(PhxObject *b, cairo_t *cr) {
 
   PhxObjectDrawing *odrw = (PhxObjectDrawing*)b;
 
@@ -1456,18 +1478,19 @@ draw_navigate(PhxObject *b, cairo_t *cr) {
     cairo_line_to(cr, x + w - radius, y);
     cairo_close_path(cr);
 
-    cairo_set_source_rgba(cr, 0.94, 0.94, 0.94, 1);
-    cairo_fill_preserve(cr);
-
-    if ((odrw->state & 1) == 1) {
-      cairo_set_source_rgb(cr, 0.5, 0.5, 0.5);
-      cairo_fill_preserve(cr);
-    }
-
     double colour = (sensitive_get((PhxObject*)odrw)) ? 0.0 : 0.5;
-    cairo_set_source_rgba(cr, colour, colour, colour, 1);
-    cairo_set_line_width(cr, .5);
-    cairo_stroke(cr);
+    if ((odrw->state & 1) == 1)
+      cairo_set_source_rgb(cr, 0.5, 0.5, 0.5);
+    else
+      cairo_set_source_rgba(cr, 0.94, 0.94, 0.94, 1);
+    if (frame_draw_get((PhxObject*)odrw)) {
+      cairo_fill_preserve(cr);
+      cairo_set_source_rgba(cr, colour, colour, colour, 1);
+      cairo_set_line_width(cr, line_width);
+      cairo_stroke(cr);
+    } else {
+      cairo_fill(cr);
+    }
 
     colour += 0.2;
     cairo_set_source_rgba(cr, colour, colour, colour, 1);
@@ -1492,18 +1515,19 @@ draw_navigate(PhxObject *b, cairo_t *cr) {
     cairo_line_to(cr, x, y + radius);
     cairo_close_path(cr);
 
-    cairo_set_source_rgba(cr, 0.94, 0.94, 0.94, 1);
-    cairo_fill_preserve(cr);
-
-    if ((odrw->state & 1) == 1) {
-      cairo_set_source_rgb(cr, 0.5, 0.5, 0.5);
-      cairo_fill_preserve(cr);
-    }
-
     double colour = (sensitive_get((PhxObject*)odrw)) ? 0.0 : 0.5;
-    cairo_set_source_rgba(cr, colour, colour, colour, 1);
-    cairo_set_line_width(cr, .5);
-    cairo_stroke(cr);
+    if ((odrw->state & 1) == 1)
+      cairo_set_source_rgb(cr, 0.5, 0.5, 0.5);
+    else
+      cairo_set_source_rgba(cr, 0.94, 0.94, 0.94, 1);
+    if (frame_draw_get((PhxObject*)odrw)) {
+      cairo_fill_preserve(cr);
+      cairo_set_source_rgba(cr, colour, colour, colour, 1);
+      cairo_set_line_width(cr, line_width);
+      cairo_stroke(cr);
+    } else {
+      cairo_fill(cr);
+    }
 
     colour += 0.2;
     cairo_set_source_rgba(cr, colour, colour, colour, 1);
@@ -1512,7 +1536,6 @@ draw_navigate(PhxObject *b, cairo_t *cr) {
     cairo_line_to(cr, (x + w - sp), (y + h) - sp);
     cairo_line_to(cr,  x + sp,      (y + (h / 2)));
     cairo_fill(cr);
-
   }
 
     // shade bottom
@@ -1522,14 +1545,14 @@ draw_navigate(PhxObject *b, cairo_t *cr) {
 }
 
 static gboolean
-find_draw_event(PhxInterface *fport, cairo_t *cr, void *widget) {
+uio_draw_event(PhxInterface *iface, cairo_t *cr, void *widget) {
 
   (void)widget;
   cairo_reset_clip(cr);
 
     // interface background
   cairo_set_source_rgba(cr, 0.94, 0.94, 0.94, 1);
-  cairo_rectangle(cr, 0, 0, fport->mete_box.w, fport->mete_box.h);
+  cairo_rectangle(cr, 0, 0, iface->mete_box.w, iface->mete_box.h);
   cairo_clip(cr);
   cairo_fill(cr);
 
@@ -1537,8 +1560,8 @@ find_draw_event(PhxInterface *fport, cairo_t *cr, void *widget) {
     // 0 just shades background, see above
   cairo_save(cr);
     int ldx = 0;
-    while (fport->object_list[(++ldx)] != NULL) {
-      PhxObject *obj = fport->object_list[ldx];
+    while (iface->object_list[(++ldx)] != NULL) {
+      PhxObject *obj = iface->object_list[ldx];
       if (visible_get(obj)) {
         if (obj->_draw_cb != NULL)  obj->_draw_cb(obj, cr);
         if (obj->child != NULL) {
@@ -1722,15 +1745,15 @@ ui_button_label_create(PhxObjectButton *obtn, cairo_t *cro,
 }
 
 static void
-ui_button_menu_create(PhxObjectButton *obtn, cairo_t *cro,
-                                           int number_strings, ...) {
+ui_label_menu_create(PhxObject *obj, cairo_t *cro, int number_strings, ...) {
+
   PhxObjectTextview *olbl;
   olbl = (PhxObjectTextview*)ui_object_create(PHX_LABEL, draw_label,
-                                  obtn->draw_box.x + 1, obtn->draw_box.y + 1,
-                                  obtn->draw_box.w - 2, obtn->draw_box.h - 2);
-  obtn->label = olbl;
-    // note: leaving string_mete and string as NULL
+                                  obj->draw_box.x + 1, obj->draw_box.y + 1,
+                                  obj->draw_box.w - 2, obj->draw_box.h - 2);
+  obj->child = (PhxObject*)olbl;
   ui_textview_font_set(olbl, cro, olbl->draw_box.h);
+    // note: leaving string_mete and string as NULL
   ui_textview_buffer_set(olbl, NULL);
 
   int max_len = 0;
@@ -1770,18 +1793,18 @@ ui_button_menu_create(PhxObjectButton *obtn, cairo_t *cro,
   olbl->draw_box.w = (2 * BUTTON_TEXT_MIN) + max_len;
   int end_x = olbl->draw_box.x + olbl->draw_box.w;
     // add on combo's signature arrows
-  olbl->child = ui_object_create(PHX_DRAWING, draw_button_combo_arrows,
+  olbl->child = ui_object_create(PHX_DRAWING, draw_combo_arrows,
                                   end_x - BUTTON_TEXT_MIN,
                                   olbl->draw_box.y + 1,
                                   (67.824176 / 152.615385) * olbl->draw_box.h,
                                   olbl->draw_box.h - 2);
-    // calculate obtn size based on longest line + signature arrows
+    // calculate obj size based on longest line + signature arrows
   if (olbl->child != NULL) {
     end_x += olbl->child->mete_box.w;
   }
-  end_x = (obtn->draw_box.x + obtn->draw_box.w) - end_x;
-  ui_box_inset(&obtn->draw_box, 0, 0, end_x, 0);
-  ui_box_inset(&obtn->mete_box, 0, 0, end_x, 0);
+  end_x = (obj->draw_box.x + obj->draw_box.w) - end_x;
+  ui_box_inset(&obj->draw_box, 0, 0, end_x, 0);
+  ui_box_inset(&obj->mete_box, 0, 0, end_x, 0);
 }
 
 #pragma mark *** FindPort ***
@@ -1854,6 +1877,16 @@ popup_meter(PhxInterface *pport, GdkEvent *event, void *widget) {
     cairo_region_destroy(crr);
     return TRUE;
   }
+      // GDK_BUTTON_PRESS needed because of grab
+  if (event->type == GDK_BUTTON_PRESS) {
+    int x = (int)(event->button.x);
+    int y = (int)(event->button.y);
+    if ( ((unsigned)x > (unsigned)pport->mete_box.w)
+        || ((unsigned)y > (unsigned)pport->mete_box.h)) {
+      gtk_widget_destroy(widget);
+    }
+    return TRUE;
+  }
   if (event->type == GDK_BUTTON_RELEASE) {
     LCIEditorArea *ea = ((LCIFindPort*)pport)->session->editor_area;
     LCIFindPort *findPort = ea->findport;
@@ -1885,7 +1918,18 @@ popup_meter(PhxInterface *pport, GdkEvent *event, void *widget) {
       if (findPort->mete_box.h == two_row_height)
         gtk_widget_set_size_request(find_window, min_width, BOX_HEIGHT);
     }
-    gtk_widget_destroy(widget);
+
+      // following needed because of grab
+    if ((obtn->state & 1) == 0) {
+      int x = (int)(event->button.x);
+      int y = (int)(event->button.y);
+      if ( ((unsigned)x <= (unsigned)pport->mete_box.w)
+          && ((unsigned)y <= (unsigned)pport->mete_box.h)) {
+        gtk_widget_destroy(widget);
+      }
+    }
+    obtn->state &= ~7;
+
       // redraw findPort
     cairo_region_t *crr;
     crr = cairo_region_create_rectangle(
@@ -1894,13 +1938,10 @@ popup_meter(PhxInterface *pport, GdkEvent *event, void *widget) {
     cairo_region_destroy(crr);
     return TRUE;
   }
-  if (event->type == GDK_FOCUS_CHANGE) {
-    if (!event->focus_change.in)  gtk_widget_destroy(widget);
-    return TRUE;
-  }
   return FALSE;
 }
 
+/* NOTE: GTK_WINDOW_POPUP can NOT receive FOCUS_CHANGE */
 static GtkWidget *
 findport_combo_run(LCIFindPort *fport, PhxObjectButton *obtn) {
 
@@ -1923,20 +1964,14 @@ findport_combo_run(LCIFindPort *fport, PhxObjectButton *obtn) {
   ((LCIFindPort*)pport)->session = fport->session;
 
   PhxObject *obj = ui_object_create(PHX_POPUP, draw_popup, 0, 0, w, h);
-  ui_interface_add(pport, obj);
-    // after add so full event box
   ui_box_inset(&obj->draw_box, x, y, x, y);
+  ui_interface_add(pport, obj);
     // combo menu data
   obj->child = (PhxObject*)obtn->label;
 
   g_signal_connect_swapped(G_OBJECT(combo_popup), "draw",
                                 G_CALLBACK(popup_draw_event), pport);
     // NOTE: can't change cursor unless connect to top-most
-  gtk_widget_set_can_focus(combo_popup, TRUE);
-  g_signal_connect_swapped(G_OBJECT(combo_popup), "focus-in-event",
-                                G_CALLBACK(popup_meter), pport);
-  g_signal_connect_swapped(G_OBJECT(combo_popup), "focus-out-event",
-                                G_CALLBACK(popup_meter), pport);
   g_signal_connect_swapped(G_OBJECT(combo_popup), "button-press-event",
                                 G_CALLBACK(popup_meter), pport);
   g_signal_connect_swapped(G_OBJECT(combo_popup), "button-release-event",
@@ -1967,6 +2002,12 @@ findport_combo_run(LCIFindPort *fport, PhxObjectButton *obtn) {
 
   gdk_window_move(window, (dx + wx), (dy + wy));
   gtk_widget_show_all(combo_popup);
+
+    // following allows popup to behave like it has all needed events
+  GdkDisplay *display = gdk_display_get_default();
+  GdkSeat *seat = gdk_display_get_default_seat(display);
+  gdk_seat_grab(seat, window, GDK_SEAT_CAPABILITY_ALL, FALSE,
+                                                 NULL, NULL, NULL, NULL);
 
   return combo_popup;
 }
@@ -2222,17 +2263,22 @@ findport_update_position(LCIFindPort *fport, int result_direction) {
   LCIEditorArea *ea = fport->session->editor_area;
   LCITextPort *active = ea->editor_view[0];
   if (active == NULL)  return -1;
+
+  struct _fsearch *searches = findport_results_for(fport, active->filename);
+  if (searches == NULL)  return -1;
+  if (searches->search_string == NULL)  return -1;
+  size_t rSz = strlen(searches->search_string);
+
   GtkTextIter start, end;
   GtkTextBuffer *tbuf = GTK_TEXT_BUFFER(active->textbuffer);
   gtk_text_buffer_get_selection_bounds(tbuf, &start, &end);
   int ins = gtk_text_iter_get_offset((const GtkTextIter*)&start);
   int delta = gtk_text_iter_get_offset((const GtkTextIter*)&end) - ins;
 
-  struct _fsearch *searches = findport_results_for(fport, active->filename);
     // reminder: it's a gtk textview ! pheonix
   if (searches->dirtyo != INT_MAX)
     findport_search_update_from(fport, searches->dirtyo);
-  _Bool selected = (delta == (int)strlen(searches->search_string));
+  _Bool selected = (delta == (int)rSz);
   int offset = _qresult_maximum(searches);
   if (offset < 0)  return -1;
   int majdx = offset >> 5;
@@ -2456,12 +2502,15 @@ finally:
   gtk_text_buffer_insert(tbuf, &start, buffered->string, -1);
   gtk_text_buffer_end_user_action(tbuf);
     // user's updated last location
-  s_start = start;
-  s_end = start;
-  gtk_text_iter_set_offset(&s_start, save_ins_offset);
-  gtk_text_iter_set_offset(&s_end, save_rel_offset);
-  gtk_text_buffer_select_range(tbuf, (const GtkTextIter*)&s_start,
-                                     (const GtkTextIter*)&s_end);
+  gtk_text_buffer_get_start_iter(tbuf, &start);
+  gtk_text_buffer_get_end_iter(tbuf, &end);
+  gtk_text_iter_set_offset(&start, save_ins_offset);
+  gtk_text_iter_set_offset(&end, save_rel_offset);
+  gtk_text_buffer_select_range(tbuf, (const GtkTextIter*)&start,
+                                     (const GtkTextIter*)&end);
+  gtk_text_view_scroll_to_iter(
+              GTK_TEXT_VIEW(active->textview), &start, 0.0, TRUE, 0.5, 0.5);
+  findport_display_results(fport, searches);
     // buffered is history
 #if USE_MARKS
   free(buffered->newline_list);
@@ -2496,10 +2545,13 @@ findport_replace(LCIFindPort *fport) {
       sender = (PhxObjectTextview*)fport->object_list[textview_replace_box];
       text_buffer_reset(sender);
 
+      gtk_text_buffer_begin_user_action(tbuf);
       gtk_text_buffer_delete(tbuf, &start, &end);
       gtk_text_buffer_insert(tbuf, &start, sender->string, sender->str_nil);
+      gtk_text_buffer_end_user_action(tbuf);
         // from test, insert will place cursor after inserted text
 
+      findport_search_update_from(fport, ins);
       findport_update_position(fport, RESULT_RIGHT);
       findport_display_results(fport,
                              findport_results_for(fport, active->filename));
@@ -2534,8 +2586,10 @@ findport_replace_and_find(LCIFindPort *fport) {
       sender = (PhxObjectTextview*)fport->object_list[textview_replace_box];
       text_buffer_reset(sender);
 
+      gtk_text_buffer_begin_user_action(tbuf);
       gtk_text_buffer_delete(tbuf, &start, &end);
       gtk_text_buffer_insert(tbuf, &start, sender->string, sender->str_nil);
+      gtk_text_buffer_end_user_action(tbuf);
       lci_findport_search(fport);
     }
     g_free(selected);
@@ -2625,7 +2679,8 @@ lci_findport_search(LCIFindPort *fport) {
   GtkTextBuffer *tbuf = GTK_TEXT_BUFFER(active->textbuffer);
   gtk_text_buffer_get_selection_bounds(tbuf, &start, NULL);
   int ins = gtk_text_iter_get_offset((const GtkTextIter*)&start);
-  int mnrdx, majdx = searches->n_qr;
+  int majdx = searches->n_qr;
+  int mnrdx = 0;
   results = searches->q_results + majdx;
   int offset = results->qoffsets[0];
   while ((offset > ins) && (majdx > 0)) {
@@ -2633,13 +2688,14 @@ lci_findport_search(LCIFindPort *fport) {
     offset = results->qoffsets[0];
   }
 
-  int ret_majdx = majdx,
-      ret_mnrdx = (mnrdx = 0);
-
   if (offset < ins) {
     mnrdx = msbDeBruijn32(results->qbits);
     offset = results->qoffsets[mnrdx];
   }
+
+  int ret_majdx = majdx,
+      ret_mnrdx = mnrdx;
+
   if (offset <= ins)  goto apply_tag;
   do {
     ret_majdx = majdx;
@@ -3247,55 +3303,60 @@ mouse_motion_event_txt(PhxInterface *iface, GdkEvent *event, PhxObject *obj) {
 }
 
 static _Bool
-mouse_press_event_btn(LCIFindPort *fport, GdkEvent *event, PhxObject *obj) {
+mouse_press_event_btn(PhxInterface *iface, GdkEvent *event, PhxObject *obj) {
 
-  if (obj == fport->object_list[choose_box]) {
+  LCIFindPort *fport = (LCIFindPort*)iface;
+
+  if (obj == iface->object_list[choose_box]) {
+      // reguardless of choice, both choices state 'Find'
+    lci_findport_search(fport);
     findport_combo_run(fport, (PhxObjectButton*)obj);
     return TRUE;
   }
-  if (obj == fport->object_list[navigate_left_box]) {
+  if (obj == iface->object_list[navigate_left_box]) {
     findport_navigate_left(fport);
     return TRUE;
   }
-  if (obj == fport->object_list[navigate_right_box]) {
+  if (obj == iface->object_list[navigate_right_box]) {
     findport_navigate_right(fport);
     return TRUE;
   }
-  if (obj == fport->object_list[close0_box]) {
+  if (obj == iface->object_list[close0_box]) {
       // do nothing until release, button drawing issue
     return TRUE;
   }
-  if (obj == fport->object_list[replace_all_box]) {
+  if (obj == iface->object_list[replace_all_box]) {
     findport_replace_all(fport);
     return TRUE;
   }
-  if (obj == fport->object_list[replace_box]) {
+  if (obj == iface->object_list[replace_box]) {
     findport_replace(fport);
     return TRUE;
   }
-  if (obj == fport->object_list[replace_find_box]) {
+  if (obj == iface->object_list[replace_find_box]) {
     findport_replace_and_find(fport);
     return TRUE;
   }
-  if (obj == fport->object_list[close1_box]) {
+  if (obj == iface->object_list[close1_box]) {
       // do nothing until release
     return TRUE;
   }
-  if ((obj == fport->object_list[textview_replace_box])
-      || (obj == fport->object_list[textview_find_box])) {
-    return mouse_press_event_txt((PhxInterface*)fport, event, obj);
+  if ((obj == iface->object_list[textview_replace_box])
+      || (obj == iface->object_list[textview_find_box])) {
+    return mouse_press_event_txt(iface, event, obj);
   }
   return FALSE;
 }
 
 static _Bool
-mouse_release_event_btn(LCIFindPort *fport, GdkEvent *event, PhxObject *obj) {
+mouse_release_event_btn(PhxInterface *iface, GdkEvent *event, PhxObject *obj) {
 
-  if ( (obj == fport->object_list[close0_box])
-      || (obj == fport->object_list[close1_box]) ) {
+  if ( (obj == iface->object_list[close0_box])
+      || (obj == iface->object_list[close1_box]) ) {
+    LCIFindPort *fport = (LCIFindPort*)iface;
     lci_findport_clear_results(fport);
     gtk_widget_hide(fport->session->editor_area->find_window);
-    visible_set((PhxObject*)fport, FALSE);
+    visible_set((PhxObject*)iface, FALSE);
     gtk_widget_grab_focus(
           fport->session->editor_area->editor_view[0]->textview);
   }
@@ -3628,7 +3689,6 @@ key_press_event(PhxInterface *iface, GdkEvent *event, PhxObject *obj) {
   int ch = event->key.keyval;
 
   if ( (obj->type != PHX_TEXTVIEW) && (obj->type != PHX_ENTRY) ) {
-puts("obj not of 'focus' type");
     return FALSE;
   }
 
@@ -3835,7 +3895,7 @@ event_meter(PhxInterface *iface, GdkEvent *event, void *widget) {
         gdk_window_invalidate_region(event->button.window, crr, FALSE);
         cairo_region_destroy(crr);
           // perform action
-        return mouse_press_event_btn((LCIFindPort*)iface, event, obj);
+        return mouse_press_event_btn(iface, event, obj);
       }
         // perform action
       return mouse_press_event_txt(iface, event, obj);
@@ -3845,8 +3905,6 @@ event_meter(PhxInterface *iface, GdkEvent *event, void *widget) {
       PhxObject *new_obj = (iface->has_focus == NULL) ? obj : iface->has_focus;
       if ((new_obj->type != PHX_TEXTVIEW) && (new_obj->type != PHX_ENTRY)) {
           // obj's 'activate on click release'
-          // text_reset can alter sensitive
-//        if (!sensitive_get(new_obj))  return TRUE;
         new_obj->state &= ~7;
           // queue_redraw
         cairo_region_t *crr;
@@ -3854,7 +3912,7 @@ event_meter(PhxInterface *iface, GdkEvent *event, void *widget) {
                  (cairo_rectangle_int_t *)&new_obj->draw_box);
         gdk_window_invalidate_region(event->button.window, crr, FALSE);
         cairo_region_destroy(crr);
-        return mouse_release_event_btn((LCIFindPort*)iface, event, obj);
+        return mouse_release_event_btn(iface, event, obj);
       }
       return mouse_release_event_txt(iface, event, obj);
 
@@ -3963,7 +4021,7 @@ fw_initialize(PhxInterface *fport, cairo_t *cro) {
   obtn = (PhxObjectButton*)ui_object_create(PHX_BUTTON_COMBO, draw_button,
                          xpos, 0, fport->mete_box.w, box_height);
   ui_box_inset(&obtn->draw_box, bbm, bbm, bbm, bbm);
-  ui_button_menu_create(obtn, cro, 2, "Find", "Find & Replace");
+  ui_label_menu_create((PhxObject*)obtn, cro, 2, "Find", "Find & Replace");
   ui_interface_add(fport, (PhxObject*)obtn);
 
 // want decrease in between button drawing, vertical alter mete location
@@ -4133,7 +4191,7 @@ lci_findport_create(LCISession *session) {
 
     // signals for G_OBJECT(find_window)
   g_signal_connect_swapped(G_OBJECT(find_window), "draw",
-                                G_CALLBACK(find_draw_event), findPort);
+                                G_CALLBACK(uio_draw_event), findPort);
     /* Because 'window' will include a textview, need to attach
      * GDK_POINTER_MOTION_MASK to 'window', adjustment to/from
      * pointer/text_cursor */
