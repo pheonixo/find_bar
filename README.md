@@ -14,3 +14,8 @@ a text buffer.
   3 Nov 23. Altered code to fix popup. Went from TOP_MOST to POPUP had
 altered event behavior, which found workaround. Could not figure workarounds
 on gtk tags multiline display, nor scroll abilities to a selection.
+
+  13 Nov 23. Changes made to expand base code. Initial design now approaching
+an almost seperated library of PhxInterfaces and PhxObjects. A few added
+features included in design based on not yet released second interface. The
+POPUP use is nearing use as treeviews. Still working on 'marks/tags'.
