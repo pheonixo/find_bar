@@ -7,29 +7,23 @@
 #include <ctype.h>
 #include "memrchr.c"
 
-static GtkClipboard* clipboard = NULL;
+#define USE_MARKS   1
+#define OBJS_ALLOC  16
+#define OBJS_PWR    4
 
-// using 2 windows, instead of findbar opening in same
-// window as textview. Allows me to work on 'text_buffer'.
-#define TW 800
-#define TH 200  // 200
-#define BOX_WIDTH  600
-
-#define DEBUGGING 0
-#define USE_MARKS 1
-#define VERIFY    0
 #define MARK_ALLOC  4096
 #define TGAP_ALLOC  4096
 // used for draw_buffer
 #define BUFF_ALLOC  8192
-#define BOX_HEIGHT 22
 #define BUTTON_TEXT_MIN 3
-/* increased to 32 objects for testing */
-#define OBJECTS_MAX  32
+
+#define BOX_HEIGHT 22
 //#define FONT_NAME "Pearl"
 #define FONT_NAME "Sans"
 //#define FONT_NAME "Noto Sans"
 //#define FONT_NAME "Monospace"
+
+static GtkClipboard* clipboard = NULL;
 // motion too sensitive, need for fast, slight motion disqualifier
 // case: auto-scroll when you think there's no motion
 static double press_event_x;
@@ -39,11 +33,27 @@ static char window_adjustments[2][3] = { { 0, -3, 2 },  // <= 20
                                          { 0, -4, 3 }   //  > 20
 };
 
+// Evolution/De-evolution of PhxOject tends to be:
+//  type, state, mete_box (usage, variations, space occupies)
 
 typedef enum {
+  /* Non-drawables */
  PHX_NONE     = 0,
  PHX_ANY      = 1,
- PHX_IFACE,
+ PHX_IFACE,            // base type (obj) connection to gdk/gtk
+ PHX_TEXTBUFFER,       // a non-drawing text (evolving)
+  /* Drawable, normally straight cairo commands */
+ PHX_DRAWING,          // base type (obj)
+  /* Drawables Text */
+ PHX_TEXTVIEW,         // base type (obj)
+                       //   events/auto-scroll, multi-line viewport
+ PHX_ENTRY,            // base type (obj)  textview variation
+                       //   events/auto-scroll, single line viewport
+ PHX_LABEL,            // base type (obj)  textview variation
+                       //   non-events/non-scroll, can be multiline
+ PHX_COMBO_LABEL,      // base type (obj)  textview variation
+                       //   non-edit, can be multiline, has bank
+  /* Drawables Buttons (combines with text and/or drawing) */
  PHX_BUTTON,           // base type (obj)
  PHX_BUTTON_LABELED,   // base type (obj + (child == label))
  PHX_BUTTON_COMBO,     // button variation (obj + several children)
@@ -52,29 +62,29 @@ typedef enum {
                        //   event distinct
  PHX_NAVIGATE_RIGHT,   // base type (obj) altered 'button draw'
                        //   event distinct
- PHX_TEXTVIEW,         // base type (obj)
-                       //   events/auto-scroll, multi-line viewport
- PHX_ENTRY,            // base type (obj)  textview variation
-                       //   events/auto-scroll, single line viewport
- PHX_LABEL,            // base type (obj)  textview variation
-                       //   non-events/non-scroll, can be multiline
- PHX_DRAWING,          // base type (obj)
- PHX_TEXTBUFFER,       // a non-drawing textview
- PHX_POPUP, //?
+  /* Working on */
+ PHX_POPUP,            //  (evolving) passes bank width/height and
+                       // child linkage to button/label
+ PHX_BANK_MENU,        // bank doesn't overwrite actuator object
+ PHX_BANK_COMBO,       // bank is part of actuator object
  PHX_OBJECT_LAST
 } PhxObjectType;
 
 typedef struct _PhxInterface           PhxInterface;
+typedef _Bool (*PhxConfigureHandler)(PhxInterface *, GdkEvent *, void *);
 typedef struct _PhxObject              PhxObject;
 typedef struct { int x, y, w, h; }     PhxRectangle;
 typedef void (*PhxDrawHandler)(PhxObject*, cairo_t*);
 typedef struct _PhxObject              PhxObjectDrawing;
 typedef struct _PhxObjectTextview      PhxObjectTextview;
-typedef struct _PhxObjectTextview      PhxObjectLabel;
+typedef struct _PhxObjectLabel         PhxObjectLabel;
 typedef struct _PhxObjectButton        PhxObjectButton;
+typedef struct _PhxBank                PhxBank;
+typedef void (*PhxActionHandler)(PhxInterface *, GdkEvent *, PhxObject *);
+typedef void (*PhxResultHandler)(PhxBank *);
 typedef struct _PhxObjectTextbuffer    PhxObjectTextbuffer;
 
-typedef enum { 
+typedef enum {
  MOUSE_CLEAR          = 0,
  MOUSE_MOTION         = 1,
  MOUSE_1BUTTON        = 2,
@@ -86,15 +96,43 @@ typedef enum {
 
 struct _PhxInterface {
  PhxObjectType  type;
- int            state;                   // flags/state
- PhxRectangle   mete_box;                // allocate box
- GdkWindow      *parent_window;
- PhxObject     **object_list;       // list of alloted base objects
- char          (*event_map)[2048];  // mapping of event areas  
- size_t          map_size;          // realloc
+ int            state;              // flags/state
+ PhxRectangle   mete_box;           // allocate box
+ PhxRectangle   draw_box;           // clip box
+ PhxObject     **objects;           // list of alloted base objects
+ char           *event_map;         // mapping of event areas
  PhxObject      *has_focus;         // active object within iface
+ GdkWindow      *parent_window;     // the content window of the 'draw'
+ PhxConfigureHandler _configure_event;
    // expect attachments
  void           *reserved[5];
+};
+
+// PHX_BANK_MENU, PHX_BANK_COMBO
+// Note: design for 65535 objects, semi-related consideration is OBJS_ALLOC
+// allocation in upper 16 of state
+// motion select in upper 16 of display_indicies
+// current display_object in lower 16
+// at OBJS_ALLOC == 16 need 12bits for allocation
+// OBJS_ALLOC min of 2 needs 15bits
+struct _PhxBank {
+ PhxObjectType  type;
+ int            state;              // flags/state
+ PhxRectangle   mete_box;           // allocate box
+ PhxRectangle   draw_box;           // clip box
+ PhxObject     **objects;           // list of alloted base objects
+ char           *event_map;         // mapping of event areas
+ PhxObject      *has_focus;         // active object within bank
+ GdkWindow       *parent_window;     // the content window of the 'draw'
+ PhxConfigureHandler _configure_event;
+   // expect attachments
+ PhxObjectButton *actuator;          // activates popup
+ PhxObject       *display_object;    // the translated bank member for actuator
+ int             display_indicies;   // the highlit:current mapping
+ int             flag;
+ PhxResultHandler _result_cb;        // TRUE if display_object changes
+                                     // allows configure alters on popup complete
+ void            *reserved[1];
 };
 
 /* Application Global, used for searching text */
@@ -121,13 +159,15 @@ struct _fsearch {
 
 typedef struct _LciFindPort {
  PhxObjectType  type;
- int            state;                   // flags/state
- PhxRectangle   mete_box;                // allocate box
- GdkWindow      *parent_window;
- PhxObject     **object_list;       // list of alloted base objects
- char          (*event_map)[2048];  // mapping of event areas  
- size_t          map_size;          // realloc
+ int            state;              // flags/state
+ PhxRectangle   mete_box;           // allocate box
+ PhxRectangle   draw_box;           // clip box
+ PhxObject     **objects;           // list of alloted base objects
+ char           *event_map;         // mapping of event areas
  PhxObject      *has_focus;         // active object within iface
+ GdkWindow      *parent_window;     // the content window of the 'draw'
+ PhxConfigureHandler _configure_event;
+   // expect attachments
    // addons that make findport different than PhxInterface
  void           *param_data;        // passed to iface created/called by self
  void           *session;           // called void for demo purposes
@@ -139,33 +179,50 @@ LCIFindPort *findPort = NULL;
 
 struct _PhxObject {
  PhxObjectType  type;
- int            state;                   // flags/state
- PhxRectangle   mete_box;                // allocate box
- PhxRectangle   draw_box;                // clip box
- PhxDrawHandler _draw_cb;                // how to draw
- PhxObject     *child;                   // non-specific addon
- PhxInterface  *iface;                   // object mounting
+ int            state;              // flags/state
+ PhxRectangle   mete_box;           // allocate box
+ PhxRectangle   draw_box;           // clip box
+ PhxDrawHandler _draw_cb;           // how to draw
+ PhxObject      *child;             // non-specific addon
+ PhxInterface   *iface;             // object mounting
 };
 
 struct _PhxObjectButton {
  PhxObjectType  type;
- int            state;                   // flags/state
- PhxRectangle   mete_box;                // allocate box
- PhxRectangle   draw_box;                // clip box
- PhxDrawHandler _draw_cb;                // how to draw
- PhxObjectTextview *label;               // textview addon
- PhxInterface  *iface;                   // object mounting
+ int            state;              // flags/state
+ PhxRectangle   mete_box;           // allocate box
+ PhxRectangle   draw_box;           // clip box
+ PhxDrawHandler _draw_cb;           // how to draw
+ PhxObject      *child;             // non-specific addon
+ PhxInterface   *iface;             // object mounting
+ PhxActionHandler  _event_cb;       // button press/release actions
+ PhxBank        *bank;              // special button list
+};
+
+struct _PhxObjectLabel {
+ PhxObjectType  type;
+ int            state;              // flags/state
+ PhxRectangle   mete_box;           // allocate box
+ PhxRectangle   draw_box;           // clip box
+ PhxDrawHandler _draw_cb;           // how to draw
+ PhxObject      *child;             // non-specific addon
+ PhxInterface   *iface;             // object mounting
+ char *string;                      // c-str pointer
+  // attributes
+ int font_em;
+ char *font_name;
+ double font_size;
+ double font_origin;
 };
 
 typedef struct { int x, y, offset; } location;
-typedef struct _mark   PhxMark;
 
 // non-drawing object, character manipulation
 struct _PhxObjectTextbuffer {
  PhxObjectType  type;
  int            state;                   // flags/state
  PhxRectangle   mete_box;                // ignored
- void *string_mete; // buffer
+// void *string_mete; // buffer
  char *string;      // c-str pointer, ref to string_mete
  int str_nil;       // simular to strlen return
  int gap_start, gap_end, gap_delta;  // editing management
@@ -175,17 +232,24 @@ struct _PhxObjectTextbuffer {
  location insert, release, interim, drop;
 };
 
+typedef struct _mark   PhxMark;
+
 struct _PhxObjectTextview {
  PhxObjectType  type;
- int            state;                   // flags/state
- PhxRectangle   mete_box;                // allocate box
- PhxRectangle   draw_box;                // clip box
- PhxDrawHandler _draw_cb;                // how to draw
- PhxObject     *child;                   // non-specific addon
- PhxInterface  *iface;                   // object mounting
-  // textbuffer
- void *string_mete; // buffer
+ int            state;              // flags/state
+ PhxRectangle   mete_box;           // allocate box
+ PhxRectangle   draw_box;           // clip box
+ PhxDrawHandler _draw_cb;           // how to draw
+ PhxObject      *child;             // non-specific addon
+ PhxInterface   *iface;             // object mounting
  char *string;      // c-str pointer, ref to string_mete
+
+  // attributes
+ int font_em;
+ char *font_name;
+ double font_size;
+ double font_origin;
+
  int str_nil;       // simular to strlen return
  int gap_start, gap_end, gap_delta;       // editing management
   // lowest offset of gap_start, where edit began or is (<backspace>)
@@ -195,12 +259,8 @@ struct _PhxObjectTextview {
  PhxRectangle bin;   // scrolled view of text, start of displayed text
   // buffer (copy of string inside bin) used to avoid 'lock'(s)
  char *draw_buffer;
-  // attributes
- int font_em;
- char *font_name;
- double font_size;
- double font_origin;
  char *glyph_widths;
+
 #if USE_MARKS
  PhxMark *newline_list;
    // editing management
