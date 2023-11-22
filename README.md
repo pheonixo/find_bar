@@ -19,3 +19,8 @@ on gtk tags multiline display, nor scroll abilities to a selection.
 an almost seperated library of PhxInterfaces and PhxObjects. A few added
 features included in design based on not yet released second interface. The
 POPUP use is nearing use as treeviews. Still working on 'marks/tags'.
+
+  22 Nov 23. Major shift in code. Seperated PhxObjects for a soon to be a static
+library for link in. Marks had some work done on them, and more complete use of
+'pop-up'. Addressed issue of an OS using a different coordinate system then Gtk/Gdk.
+As of upload left PhxObject code in example of Gtk linkage of lci_findport.
