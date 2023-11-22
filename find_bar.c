@@ -1,4 +1,4 @@
-#include "../LCode/phxobjects.c"
+#include "phxobjects.c"
 #include "find_bar.h"
 
 
