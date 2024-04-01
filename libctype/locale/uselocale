@@ -1,0 +1,15 @@
+/*
+ *  uselocale - use locale in current thread
+ *  Pheonix
+ *
+ *  Created by Steven Abner on Sun 07 Jul 2019.
+ *  Copyright (c) 2019. All rights reserved.
+ *
+ */
+
+#include "as_locale.h"
+
+locale_t
+uselocale(locale_t newloc);
+
+see newlocale.c

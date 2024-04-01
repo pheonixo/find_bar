@@ -1,0 +1,15 @@
+/*
+ *  freelocale - free resources allocated for a locale object
+ *  Pheonix
+ *
+ *  Created by Steven Abner on Sun 07 Jul 2019.
+ *  Copyright (c) 2019. All rights reserved.
+ *
+ */
+
+#include "as_locale.h"
+
+void
+freelocale(locale_t locobj);
+
+see newlocale.c

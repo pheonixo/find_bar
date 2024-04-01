@@ -1,0 +1,15 @@
+/*
+ *  setlocale - set program locale
+ *  Pheonix
+ *
+ *  Created by Steven Abner on Sun 07 Jul 2019.
+ *  Copyright (c) 2019. All rights reserved.
+ *
+ */
+
+#include "as_locale.h"
+
+char *
+setlocale(int category, const char *locale);
+
+see newlocale.c
