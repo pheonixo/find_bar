@@ -1,13 +1,12 @@
 #ifndef _LCI_FINDPORT_H_
 #define _LCI_FINDPORT_H_
 
-
-#define BOX_HEIGHT 22
-
 //                                        Fh,FRh,bbm
 static char window_adjustments[2][3] = { { 0, -3, 2 },  // <= 20
                                          { 0, -4, 3 }   //  > 20
 };
+
+#define BOX_HEIGHT 22
 
 typedef struct _LciFindPort {
  PhxObjectType  type;

@@ -1,7 +1,6 @@
 #include "phxobjects.c"
 #include "find_bar.h"
 
-
 #pragma mark *** FindPort ***
 
 GtkWidget *main_window = NULL;
@@ -11,7 +10,7 @@ result_cb(PhxBank *obank) {
 
   PhxObjectButton *obtn = (PhxObjectButton*)obank->actuator;
     // base on if 'Find & Replace' is selected
-  _Bool set = (obank->display_indicies & 0x0FFFFU) == 1;
+  _Bool set = (obank->display_indices & 0x0FFFFU) == 1;
 
   visible_set(findPort->objects[close0_box], !set);
   visible_set(findPort->objects[replace_all_box], set);
@@ -68,8 +67,8 @@ findport_results_display(LCIFindPort *fport, struct _fsearch *fdata) {
     // could sprint direct
   char rbuf[32];
   sprintf(rbuf, "%d found matches", found);
-  PhxObjectTextview *olbl = (PhxObjectTextview*)fport->objects[found_box];
-  ui_textview_buffer_set(olbl, rbuf);
+  PhxObjectLabel *olbl = (PhxObjectLabel*)fport->objects[found_box];
+  ui_label_set(olbl, rbuf, HJST_RGT);
 
   _Bool set = found > 1;
   if (found == 1) {
@@ -111,13 +110,16 @@ findport_search_from(PhxObjectTextview *otxt,
   if (sdata->n_pairs != 0) {
       // not pristine, establish point to check for realloc
     acheck = (sdata->n_pairs + (MARK_ALLOC - 1)) & ~(MARK_ALLOC - 1);
-    if ((start != 0) &&  (mdPtr->d0 < start)) {
-      PhxMarkData *offset_mark;
-      offset_mark = bsearch(&start, mdPtr, search->sdata->n_pairs,
-                              sizeof(PhxMarkData), _text_mark_offsets_compare);
-      if (offset_mark->d0 < start)  offset_mark++;
-      if (offset_mark->d0 == INT_MAX)  offset_mark--;
+    if ((start != 0) && (mdPtr->d0 < start)) {
+      PhxMarkData *offset_mark = search->sdata->pairs + (sdata->n_pairs - 1);
+      if (offset_mark->d0 > start) {
 
+        offset_mark = bsearch(&start, mdPtr, search->sdata->n_pairs,
+                              sizeof(PhxMarkData), _text_mark_offsets_compare);
+        if (offset_mark->d0 < start)  offset_mark++;
+      }
+      if (offset_mark->d0 == INT_MAX)
+         start = (--offset_mark)->d0;
       ndx = offset_mark - mdPtr;
       mdPtr = offset_mark;
     }
@@ -164,6 +166,14 @@ findport_results_reset(struct _fsearch *search) {
   //changed_id
 }
 
+/*
+   Pulls up a 'fsearch' data for a given 'filename'.
+   Should there be an existing search, the following happens.
+   In the case of using 'MARKS', will update 'fsearch' from
+   a given offset set by any editing of 'filename's buffer.
+   Without 'MARKS', will perform search on entire buffer, assuming
+   something changed, and no notice of change can be provided.
+*/
 static struct _fsearch *
 findport_results_get_for(LCIFindPort *fport, char *filename) {
 
@@ -206,30 +216,33 @@ qfile_create:
       goto qfile_create;
     }
   } while (1);
+
+  PhxObjectTextview *otxt = (PhxObjectTextview*)fport->param_data;
 #if USE_MARKS
-  return search;
+  PhxMark *search_mark = text_mark_get_type(otxt, PHXSEARCH);
+  if (search_mark->dirtyo < search->sdirtyo)
+    search->sdirtyo = search_mark->dirtyo;
+  if (search->sdirtyo != INT_MAX) {
+    findport_search_from(otxt, search, search->sdirtyo);
+    findport_results_display(fport, search);
+  }
 #else
     // must update entire search, no access to dirtyo
-  int rs;
-  rs = findport_search_from((PhxObjectTextview*)fport->param_data, search, 0);
+  int rs = findport_search_from(otxt, search, 0);
   if (rs == 0)
     findport_results_reset(search);
-  return search;
 #endif
+  return search;
 }
 
 #if USE_MARKS
 static void
 _search_mark_update(PhxObjectTextview *otxt, void *data) {
 
-  PhxMark *search_mark = text_mark_get_type(otxt, PHXSEARCH);
+    // currently, update part of findport_results_get_for()
   LCIFindPort *fport = (LCIFindPort*)data;
   struct _fsearch *search = findport_results_get_for(fport, NULL);
   if (search == NULL)  return;
-  if (search_mark->dirtyo < search->sdirtyo)
-    search->sdirtyo = search_mark->dirtyo;
-  if (search->sdirtyo != INT_MAX)
-    findport_search_from(otxt, search, search->sdirtyo);
 }
 
 static void
@@ -297,7 +310,7 @@ findport_update_entry(PhxObjectTextview *otxt, struct _fsearch *search,
   return (--sdata->n_pairs);
 }
 
-/* on entry assumes sdx invalid, sets sdx for immediate use for display */
+/* Given an insert location, set search sdx based on directional request. */
 static void
 findport_move_to_mark(PhxObjectTextview *otxt,
                              struct _fsearch *search, int result_direction) {
@@ -343,9 +356,6 @@ rgt:  if ((offset_mark + 1)->d0 != INT_MAX)
     }
   }
   if (result_direction == RESULT_GT)  goto rgt;
-//  if ((result_direction == RESULT_LT)
-//      || (result_direction == RESULT_LE))
-//    return;
 }
 
 void
@@ -496,9 +506,13 @@ findport_replace(LCIFindPort *fport, int mode) {
 
   struct _fsearch *search = findport_results_get_for(fport, NULL);
   if (search == NULL)  return;
+    // verify not without replaceable data
   if (search->sdata == NULL)  return;
   if (search->sdata->n_pairs == 0)  return;
 
+    // supposedly the selection of found string.
+    // must be a selected found string for replace to assume
+    // it wasn't an accidental press of button.
   int ins = otxt->insert.offset;
   PhxMarkData *mdPtr = search->sdata->pairs;
     // note: bsearch returns NULL if following condition
@@ -508,18 +522,18 @@ findport_replace(LCIFindPort *fport, int mode) {
                               sizeof(PhxMarkData), _text_mark_offsets_compare);
   if (offset_mark->d0 == INT_MAX)  offset_mark--;
 
-    // check for button pressed with an actual selection
+    // check for button pressed with an actual selection of 'find'
   if (ins != offset_mark->d0)  return;
   if (otxt->release.offset != offset_mark->d1)  return;
-
+  PhxObjectTextview *find;
+  find = (PhxObjectTextview*)fport->objects[textview_find_box];
+  if (memcmp(&otxt->string[offset_mark->d0], find->string, find->str_nil) != 0)
+    return;
+    // no test on replace, can be empty string
   PhxObjectTextview *replace;
   replace = (PhxObjectTextview*)fport->objects[textview_replace_box];
 
-  if ( ((offset_mark->d1 - offset_mark->d0) == replace->str_nil)
-      && (memcmp(&otxt->string[offset_mark->d0],
-                     replace->string, replace->str_nil) == 0) )
-    return;
-
+    // set sdx for findport_update_entry()
   search->sdx = offset_mark - mdPtr;
 
    // no test for 1, since possible replacement may contain sstring
@@ -540,23 +554,28 @@ findport_replace(LCIFindPort *fport, int mode) {
     findport_update_entry(otxt, search, search->sdx, replace->str_nil);
     findport_results_display(fport, search);
       // adjusment of locations
-    findport_move_to_mark(otxt, search, RESULT_GT);
-    text_buffer_apply_search_tag(otxt, search);
+    if (search->sdata->n_pairs == 0) {
+      text_buffer_edit_set(otxt, (ins + replace->str_nil));
+    } else {
+      findport_move_to_mark(otxt, search, RESULT_GT);
+      text_buffer_apply_search_tag(otxt, search);
+    }
     goto queue_redraw;
   }
 
     // replace_all mode 3, does not 'Find' in replacement
+    // want difference for placement of insert mark after done
   int delta = replace->str_nil - (mdPtr->d1 - mdPtr->d0);
+  int ndx = search->sdata->n_pairs;  // holds count, not idx
+  offset_mark = mdPtr + (ndx - 1);   // -1 for idx
     // start from tail, preserves forward mark positions
-  offset_mark = mdPtr + (search->sdata->n_pairs - 1);
-  int ndx = offset_mark - mdPtr;
   do {
     otxt->insert.offset = offset_mark->d0;
     otxt->release.offset = offset_mark->d1;
     text_buffer_replace(otxt, replace->string, replace->str_nil);
-    if (ndx < search->sdx)  ins += delta;
-    if ((--search->sdata->n_pairs) == 0)  break;
-    ndx--;
+    if ((--ndx) == 0)  break;
+      // sdx = pre-button press location
+    if (ndx <= search->sdx)  ins += delta;
     offset_mark--;
   } while (1);
 
@@ -618,14 +637,10 @@ configure_event_wnd(PhxInterface *fport,
       // since offseting, change right to opposite left
     PhxObjectButton *obtn = (PhxObjectButton*)fport->objects[close0_box];
     ui_box_inset(&obtn->mete_box, w_delta, 0, -w_delta, 0);
-    ui_box_inset(&obtn->draw_box, w_delta, 0, -w_delta, 0);
     ui_box_inset(&obtn->child->mete_box, w_delta, 0, -w_delta, 0);
-    ui_box_inset(&obtn->child->draw_box, w_delta, 0, -w_delta, 0);
     obtn = (PhxObjectButton*)fport->objects[close1_box];
     ui_box_inset(&obtn->mete_box, w_delta, 0, -w_delta, 0);
-    ui_box_inset(&obtn->draw_box, w_delta, 0, -w_delta, 0);
     ui_box_inset(&obtn->child->mete_box, w_delta, 0, -w_delta, 0);
-    ui_box_inset(&obtn->child->draw_box, w_delta, 0, -w_delta, 0);
 
     PhxObjectTextview *otxt
                 = (PhxObjectTextview*)fport->objects[textview_find_box];
@@ -727,8 +742,41 @@ fw_initialize(PhxInterface *fport) {
                                      PHX_BUTTON_COMBO, draw_button,
                                      xpos, 0, fport->mete_box.w, box_height);
   ui_box_inset(&obtn->draw_box, bbm, bbm, bbm, bbm);
-  ui_bank_create(PHX_BANK_COMBO, obtn, result_cb, 2, "Find", "Find & Replace");
+  ui_button_label_create(fport, obtn, "Find", HJST_LFT);
+  int wcm2d = obtn->draw_box.w - obtn->child->mete_box.w;
+  int wd2m = obtn->mete_box.w - obtn->draw_box.w;
+    // add left margin
+  obtn->child->draw_box.x += BUTTON_TEXT_MIN;
+    // add right margin
+  obtn->child->mete_box.w =
+        obtn->child->draw_box.x + obtn->child->draw_box.w + BUTTON_TEXT_MIN;
+    // label now has position (mete) and locations within (draw)
+    // configure parent to match size changes
+    // since mete.xyh stationary, alters w by reduced size
+  obtn->draw_box.w = obtn->child->mete_box.w + wcm2d;
+  obtn->mete_box.w = obtn->draw_box.w + wd2m;
+    // assign activated cb
   obtn->_event_cb = btn_choose_event;
+    // create returns the new obtn, original obtn now bank property
+  obtn = ui_bank_create(PHX_BANK_COMBO, obtn, result_cb);
+  PhxBank *obank = obtn->bank;
+
+  obtn = (PhxObjectButton*)ui_object_create(fport,
+                                     PHX_BUTTON_LABELED, draw_button,
+                                     xpos, 0, fport->mete_box.w, box_height);
+  ui_box_inset(&obtn->draw_box, bbm, bbm, bbm, bbm);
+/* NOTE: All buttons designed around "Find & Replace" being used and longest */
+  ui_button_label_create(fport, obtn, "Find & Replace", HJST_LFT);
+  wcm2d = obtn->draw_box.w - obtn->child->mete_box.w;
+  wd2m = obtn->mete_box.w - obtn->draw_box.w;
+  obtn->child->draw_box.x += BUTTON_TEXT_MIN;
+  obtn->child->mete_box.w =
+        obtn->child->draw_box.x + obtn->child->draw_box.w + BUTTON_TEXT_MIN;
+  obtn->draw_box.w = obtn->child->mete_box.w + wcm2d;
+  obtn->mete_box.w = obtn->draw_box.w + wd2m;
+  ui_bank_row_append(obank, obtn, TRUE);
+    // used below, reset to match, plus need full size after appended
+  obtn = obank->actuator;
   ui_interface_map(fport, (PhxObject*)obtn);
 
 // want decrease in between button drawing, vertical alter mete location
@@ -743,7 +791,8 @@ fw_initialize(PhxInterface *fport) {
                         PHX_BUTTON_LABELED, draw_button,
                         xpos, (box_height - alter_y), combo_width, box_height);
   ui_box_inset(&obtn->draw_box, bbm, bbm, bbm, bbm);
-  int whtsp = ui_button_label_create(fport, obtn, "Replace All", HJST_CTR);
+  ui_button_label_create(fport, obtn, "Replace All", HJST_CTR);
+  obtn->child->draw_box.x += BUTTON_TEXT_MIN;
   obtn->_event_cb = btn_replace_all_event;
   ui_interface_map(fport, (PhxObject*)obtn);
   visible_set((PhxObject*)obtn, FALSE);
@@ -755,13 +804,15 @@ fw_initialize(PhxInterface *fport) {
                         PHX_BUTTON_LABELED, draw_button,
                         xpos, (box_height - alter_y), combo_width, box_height);
   ui_box_inset(&obtn->draw_box, bbm, bbm, bbm, bbm);
-    // want adjustments to width, used prior width to get difference
-  whtsp =
-       (ui_button_label_create(fport, obtn, "Replace", HJST_CTR) - whtsp) * 2;
-  ui_box_inset(&obtn->child->draw_box, 0, 0, whtsp, 0);
-//  ui_box_inset(&obtn->child->bin,      0, 0, whtsp, 0);
-  ui_box_inset(&obtn->draw_box,        0, 0, whtsp, 0);
-  ui_box_inset(&obtn->mete_box,        0, 0, whtsp, 0);
+  ui_button_label_create(fport, obtn, "Replace", HJST_CTR);
+    // designed right spacing
+  wcm2d = obtn->draw_box.w - obtn->child->mete_box.w;
+  wd2m = obtn->mete_box.w - obtn->draw_box.w;
+  obtn->child->draw_box.x += BUTTON_TEXT_MIN;
+  obtn->child->mete_box.w =
+        obtn->child->draw_box.x + obtn->child->draw_box.w + BUTTON_TEXT_MIN;
+  obtn->draw_box.w = obtn->child->mete_box.w + wcm2d;
+  obtn->mete_box.w = obtn->draw_box.w + wd2m;
   obtn->_event_cb = btn_replace_event;
   ui_interface_map(fport, (PhxObject*)obtn);
   visible_set((PhxObject*)obtn, FALSE);
@@ -774,6 +825,7 @@ fw_initialize(PhxInterface *fport) {
                         xpos, (box_height - alter_y), combo_width, box_height);
   ui_box_inset(&obtn->draw_box, bbm, bbm, bbm, bbm);
   ui_button_label_create(fport, obtn, "Replace & Find", HJST_CTR);
+  obtn->child->draw_box.x += BUTTON_TEXT_MIN;
   obtn->_event_cb = btn_replace_find_event;
   ui_interface_map(fport, (PhxObject*)obtn);
   visible_set((PhxObject*)obtn, FALSE);
@@ -788,12 +840,19 @@ fw_initialize(PhxInterface *fport) {
                      (fport->mete_box.w - combo_width), (box_height - alter_y),
                      combo_width, box_height);
   ui_box_inset(&obtn->draw_box, bbm, bbm, bbm, bbm);
-  whtsp = ui_button_label_create(fport, obtn, "Done", HJST_CTR);
-    // desired size change => draw_box.w - text_width
-  whtsp = obtn->child->draw_box.w - (whtsp + 6);
-  ui_box_inset(&obtn->child->draw_box, whtsp, 0, -whtsp, 0);
-  ui_box_inset(&obtn->draw_box, (2 * whtsp), 0, 0, 0);
-  ui_box_inset(&obtn->mete_box, (2 * whtsp), 0, 0, 0);
+  ui_button_label_create(fport, obtn, "Done", HJST_CTR);
+    // this alters left instead of normal right, right justify button
+  int delta = obtn->child->mete_box.w;
+  wd2m = obtn->mete_box.x - obtn->draw_box.x;
+  obtn->child->draw_box.x += BUTTON_TEXT_MIN;
+  obtn->child->mete_box.w =
+        obtn->child->draw_box.x + obtn->child->draw_box.w + BUTTON_TEXT_MIN;
+    // this alters left instead of normal right, right justify button
+  delta -= obtn->child->mete_box.w;
+  obtn->child->mete_box.x += delta;
+  obtn->draw_box.w -= delta;
+  obtn->mete_box.w -= delta;
+  obtn->mete_box.x += delta;
   obtn->_event_cb = btn_close_event;
   ui_interface_map(fport, (PhxObject*)obtn);
   visible_set((PhxObject*)obtn, FALSE);
@@ -813,7 +872,7 @@ fw_initialize(PhxInterface *fport) {
                          xpos, box_height - 1,
                          obtn->mete_box.x - xpos, (box_height - (2 * bbm)));
   ui_box_inset(&otxt->draw_box, 1, 1, 1, 1);
-  otxt->glyph_widths = ui_textview_font_set(otxt, otxt->draw_box.h);
+  ui_textview_font_set(otxt, otxt->draw_box.h);
 
   ui_textview_buffer_set(otxt, "replacing_text");
   ui_interface_map(fport, (PhxObject*)otxt);
@@ -824,7 +883,7 @@ fw_initialize(PhxInterface *fport) {
                          xpos, bbm,
                          obtn->mete_box.x - xpos, (box_height - (2 * bbm)));
   ui_box_inset(&otxt->draw_box, 1, 1, 1, 1);
-  otxt->glyph_widths = ui_textview_font_set(otxt, otxt->draw_box.h);
+  ui_textview_font_set(otxt, otxt->draw_box.h);
   ui_textview_buffer_set(otxt, "searched_text");
   ui_interface_map(fport, (PhxObject*)otxt);
 
@@ -852,7 +911,8 @@ fw_initialize(PhxInterface *fport) {
 
                         /* Label [0,1] */
   xpos = obtn->mete_box.x;
-  int cbw = fport->objects[choose_box]->mete_box.w;
+  int cbw = fport->objects[choose_box]->mete_box.w
+           + fport->objects[choose_box]->mete_box.x;
   olbl = (PhxObjectLabel*)ui_object_create(fport, PHX_LABEL, draw_label,
                                            cbw, 0, (xpos - cbw), box_height);
   ui_box_inset(&olbl->draw_box, bbm, box_height/3.5, bbm, bbm);
@@ -865,13 +925,10 @@ tw_initialize(PhxInterface *iface) {
 
   PhxObjectTextview *otxt;
 
-// single object create
+    // single object create
   char *buffer;
   long filesize;
-  FILE *rh
-//  = fopen("/home/steven/Development/Projects/find_bar/internal buffer", "r");
-      = fopen("/home/steven/Development/Projects/find_bar/find_bar.c", "r");
-//      = fopen("/home/steven/Development/Projects/find_bar/compareA", "r");
+  FILE *rh = fopen("find_bar.c", "r");
   if (rh == NULL) {  puts("file not found"); return;  }
   fseek(rh, 0 , SEEK_END);
   filesize = ftell(rh);
@@ -890,7 +947,7 @@ tw_initialize(PhxInterface *iface) {
     // Special Note: setting margins here, instead of after
     // ui_interface_map(), will omit margin areas from events.
   ui_box_inset(&otxt->draw_box, 1, 1, 1, 1);
-  otxt->glyph_widths = ui_textview_font_set(otxt, 16);
+  ui_textview_font_set(otxt, 16);
   ui_textview_buffer_set(otxt, buffer);
   ui_interface_map(iface, (PhxObject*)otxt);
 

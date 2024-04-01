@@ -1,33 +1,29 @@
 #include "phxobjects.h"
+#include "ext_cairo.c"
 
 static void
 visible_set(PhxObject *obj, _Bool visible) {
-  if (visible) {
-    obj->state &= ~(0x00000001U << (VISUAL + 0));
-  } else {
-    obj->state |= (0x00000001U << (VISUAL + 0));
-  }
+  if (visible)        obj->state &= ~STATE_BIT_VISIBLE;
+  else                obj->state |= STATE_BIT_VISIBLE;
 }
 
 static __inline__ _Bool
 visible_get(PhxObject *obj) {
-  return ((obj->state & (0x00000001U << (VISUAL + 0))) == 0);
+  return ((obj->state & STATE_BIT_VISIBLE) == 0);
 }
 
 static void
 sensitive_set(PhxObject *obj, _Bool sensitive) {
     // must be visiable
   if (visible_get(obj)) {
-    if (sensitive)
-      obj->state &= ~(0x00000001U << (VISUAL + 1));
-    else
-      obj->state |= (0x00000001U << (VISUAL + 1));
+    if (sensitive)  obj->state &= ~STATE_BIT_SENSITIVE;
+    else            obj->state |= STATE_BIT_SENSITIVE;
   }
 }
 
 static __inline__ _Bool
 sensitive_get(PhxObject *obj) {
-  return ((obj->state & (0x00000001U << (VISUAL + 1))) == 0);
+  return ((obj->state & STATE_BIT_SENSITIVE) == 0);
 }
 
 /* Allows shutting off of button outlines */
@@ -35,16 +31,14 @@ static void
 frame_draw_set(PhxObject *obj, _Bool draws) {
     // must be visiable
   if (visible_get(obj)) {
-    if (draws)
-      obj->state &= ~(0x00000001U << (VISUAL + 2));
-    else
-      obj->state |= (0x00000001U << (VISUAL + 2));
+    if (draws)      obj->state &= ~STATE_BIT_BTN_FRAME;
+    else            obj->state |= STATE_BIT_BTN_FRAME;
   }
 }
 
 static __inline__ _Bool
 frame_draw_get(PhxObject *obj) {
-  return ((obj->state & (0x00000001U << (VISUAL + 2))) == 0);
+  return ((obj->state & STATE_BIT_BTN_FRAME) == 0);
 }
 
 #pragma mark *** TextMarks ***
@@ -55,7 +49,10 @@ _text_mark_offsets_compare(const void *a, const void *b) {
   int key = *((int*)a);
   PhxMarkData *mAsk0 = (PhxMarkData*)b;
   int lineStart  = mAsk0->d0;
-  if (lineStart == INT_MAX)  return -1;
+  if (lineStart == INT_MAX) {
+    if (key == INT_MAX)  return 0;
+    return -1;
+  }
 
   PhxMarkData *mAsk1 = mAsk0 + 1;
   int lineEnd    = mAsk1->d0;
@@ -308,6 +305,19 @@ text_mark_get_type(PhxObjectTextview *otxt, PhxMarkType type) {
 
 #pragma mark *** TextBuffer ***
 
+static int
+u8glyphwidth(PhxObjectTextview *otxt, char **rdPtr, int n) {
+
+  if (*(*rdPtr) >= 0) {
+    unsigned idx = (unsigned)(*(*rdPtr));
+    (*rdPtr)++;
+    return otxt->glyph_widths[idx];
+  }
+  return ext_cairo_glyph_advance(rdPtr, otxt->cro, otxt->font_name,
+                    CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL,
+                    otxt->font_size);
+}
+
 // given a location
 // scroll if needed to view that location
 static void
@@ -359,18 +369,22 @@ location_for_offset(PhxObjectTextview *otxt, location *temp) {
     x = INT_MAX;
   }
   temp->y = line_mark->line * otxt->font_em;
-  char *rdPtr = &otxt->string[line_mark->offset];
-  char *textPtr = &otxt->string[temp->offset];
-  if (textPtr >= gsPtr)  textPtr += gePtr - gsPtr;
-  if (rdPtr >= gsPtr)  {
-    rdPtr += gePtr - gsPtr;
-both_updated:
-    while (rdPtr < textPtr)
-      x += otxt->glyph_widths[(unsigned)(*rdPtr)], rdPtr++;
-  } else {
-    while (rdPtr < textPtr) {
-      x += otxt->glyph_widths[(unsigned)(*rdPtr)];
-      if ((++rdPtr) == gsPtr) {  rdPtr = gePtr; goto both_updated;  }
+  if (!x) {
+    char *rdPtr = &otxt->string[line_mark->offset];
+    char *textPtr = &otxt->string[temp->offset];
+    if (textPtr >= gsPtr)  textPtr += gePtr - gsPtr;
+    if (rdPtr >= gsPtr)  {
+      rdPtr += gePtr - gsPtr;
+  both_updated:
+      while ((textPtr - rdPtr) > 0)
+        x += u8glyphwidth(otxt, &rdPtr, (textPtr - rdPtr));
+    } else {
+      if (gsPtr < textPtr) {
+        while ((gsPtr - rdPtr) > 0)
+          x += u8glyphwidth(otxt, &rdPtr, (gsPtr - rdPtr));
+        rdPtr = gePtr;
+      }
+      goto both_updated;
     }
   }
   temp->x = x;
@@ -401,12 +415,12 @@ both_updated:
       // on editing line
     if (rdPtr < textPtr) {
       if ((rdPtr < gsPtr) && (nPtr > gsPtr)) {
-        while (rdPtr < gsPtr)
-          x += otxt->glyph_widths[(unsigned)(*rdPtr)], rdPtr++;
+        while ((gsPtr - rdPtr) > 0)
+          x += u8glyphwidth(otxt, &rdPtr, (gsPtr - rdPtr));
         rdPtr = gePtr;
       }
-      while (rdPtr < textPtr)
-        x += otxt->glyph_widths[(unsigned)(*rdPtr)], rdPtr++;
+      while ((textPtr - rdPtr) > 0)
+        x += u8glyphwidth(otxt, &rdPtr, (textPtr - rdPtr));
     }
     temp->x = x;
     temp->y = y;
@@ -477,13 +491,14 @@ location_for_point(PhxObjectTextview *otxt, location *loc) {
   if (nPtr == NULL)
     nPtr = &otxt->string[otxt->str_nil];
   int sum = 0;
-  while (rdPtr < nPtr) {
-    int gw = otxt->glyph_widths[(unsigned)(*rdPtr)];
+  while ((nPtr - rdPtr) > 0) {
+    int gw = u8glyphwidth(otxt, &rdPtr, (nPtr - rdPtr));
     if ((sum + gw) > x) {
-      if ((x - ((gw + 1) >> 1)) >= sum)  sum += gw, rdPtr++;
+      if ((x - ((gw + 1) >> 1)) >= sum)  sum += gw;
+      else do --rdPtr; while ((*rdPtr & 0x0C0) == 0x080);
       break;
     }
-    if ((++rdPtr) == gsPtr)  rdPtr = gePtr;
+    if (rdPtr == gsPtr)  rdPtr = gePtr;
     if ((sum += gw) == x)  break;
   }
   if (rdPtr > gsPtr)  rdPtr -= gePtr - gsPtr;
@@ -496,42 +511,48 @@ location_for_point(PhxObjectTextview *otxt, location *loc) {
 // new insert position. This allows delay of having to update
 // PhxMark(s) for line_marks
 static void
-location_update_for_edit(PhxObjectTextview *tv, int sz) {
+location_update_for_edit(PhxObjectTextview *otxt, int sz) {
 
-  if ((tv->type == PHX_LABEL) || (tv->type == PHX_TEXTBUFFER)) return;
+  if ((otxt->type == PHX_LABEL) || (otxt->type == PHX_TEXTBUFFER)) return;
 
 #if USE_MARKS
-  char *rdPtr = &tv->string[tv->insert.offset];
+  char *rdPtr = &otxt->string[otxt->insert.offset];
   if (sz == 0)  goto update_finish;
   if (sz == 1) {
-    tv->insert.offset++;
-    if (*rdPtr != '\n')
-      tv->insert.x += tv->glyph_widths[(unsigned)(*rdPtr)];
-    else {
-      tv->insert.x = 0;
-      tv->insert.y += tv->font_em;
-      text_mark_dirtyl_set(tv);
+    otxt->insert.offset++;
+    if (*rdPtr != '\n') {
+      otxt->insert.x += u8glyphwidth(otxt, &rdPtr, 1);
+    } else {
+      otxt->insert.x = 0;
+      otxt->insert.y += otxt->font_em;
+      text_mark_dirtyl_set(otxt);
     }
     goto update_finish;
   }
     // delete 1 character, gap move 'down' 1
   if (sz == -1) {
-    tv->insert.offset--;
-    if (*(--rdPtr) != '\n')
-      tv->insert.x -= tv->glyph_widths[(unsigned)(*rdPtr)];
-    else {
-      tv->insert.y -= tv->font_em;
-      text_mark_dirtyl_set(tv);
-      if (tv->insert.y < 0) {
-        tv->insert.x = (tv->insert.y = 0); tv->insert.offset = 0;
+    otxt->insert.offset--;
+    if (*(--rdPtr) != '\n') {
+      char *sPtr = rdPtr;
+      if (*rdPtr < 0)  while ((*rdPtr & 0x0C0) == 0x080)  rdPtr--;
+      otxt->insert.x -= u8glyphwidth(otxt, &rdPtr, (sPtr - rdPtr));
+    } else {
+      otxt->insert.y -= otxt->font_em;
+      text_mark_dirtyl_set(otxt);
+      if (otxt->insert.y < 0) {
+        otxt->insert.x = (otxt->insert.y = 0); otxt->insert.offset = 0;
         goto update_finish;
       }
       int x = 0;
-      while ((--rdPtr) >= tv->string) {
+      while ((--rdPtr) >= otxt->string) {
+        char *sPtr = rdPtr + 1;
         if (*rdPtr == '\n')  break;
-        x += tv->glyph_widths[(unsigned)(*rdPtr)];
+        if (*rdPtr < 0)  while ((*rdPtr & 0x0C0) == 0x080)  rdPtr--;
+          // do not want advancement of rdPtr, use a dummy pointer
+        char *dPtr = rdPtr;
+        x += u8glyphwidth(otxt, &dPtr, (sPtr - rdPtr));
       }
-      tv->insert.x = x;
+      otxt->insert.x = x;
     }
     goto update_finish;
   }
@@ -541,32 +562,32 @@ location_update_for_edit(PhxObjectTextview *tv, int sz) {
   }
   //if (sz > 1)
     // sz characters were pasted in
-  char *endPtr = &tv->string[(tv->insert.offset + sz)];
+  char *endPtr = &otxt->string[(otxt->insert.offset + sz)];
   char *nPtr = memchr(rdPtr, '\n', sz);
   if (nPtr != NULL) {
-    tv->insert.x = 0;
-    tv->insert.y += tv->font_em;
-    text_mark_dirtyl_set(tv);
+    otxt->insert.x = 0;
+    otxt->insert.y += otxt->font_em;
+    text_mark_dirtyl_set(otxt);
     do {
       rdPtr = nPtr + 1;
       if (rdPtr >= endPtr)  break;
       nPtr = memchr(rdPtr, '\n', (endPtr - rdPtr));
       if (nPtr == NULL)  break;
-      tv->insert.y += tv->font_em;
+      otxt->insert.y += otxt->font_em;
     } while (1);
   }
-  while (rdPtr < endPtr)
-    tv->insert.x += tv->glyph_widths[(unsigned)(*rdPtr)], rdPtr++;
-  tv->insert.offset += sz;
+  while ((endPtr - rdPtr) > 0)
+    otxt->insert.x += u8glyphwidth(otxt, &rdPtr, (endPtr - rdPtr));
+  otxt->insert.offset += sz;
 
 update_finish:
 #else
-  location_for_offset(tv, &tv->insert);
+  location_for_offset(otxt, &otxt->insert);
 #endif
-  location_auto_scroll(tv, &tv->insert);
-  tv->interim.x = (tv->release.x = tv->insert.x);
-  tv->interim.y = (tv->release.y = tv->insert.y);
-  tv->interim.offset = (tv->release.offset = tv->insert.offset);
+  location_auto_scroll(otxt, &otxt->insert);
+  otxt->interim.x = (otxt->release.x = otxt->insert.x);
+  otxt->interim.y = (otxt->release.y = otxt->insert.y);
+  otxt->interim.offset = (otxt->release.offset = otxt->insert.offset);
 }
 
 static void
@@ -748,7 +769,7 @@ text_buffer_insert(PhxObjectTextview *otxt, char *data, int sz) {
     if (selSz != 0) {
       if (memchr(&otxt->string[otxt->insert.offset], '\n', selSz) != NULL)
         text_mark_dirtyl_set(otxt);
-    } else if ((otxt->state & (0x00000001 << (SHIFT + 10))) != 0) {
+    } else if ((otxt->state & STATE_BIT_KEY_INSERT) != 0) {
       if (otxt->string[otxt->insert.offset] == '\n')
         text_mark_dirtyl_set(otxt);
     }
@@ -795,9 +816,14 @@ moved:
     otxt->str_nil += (sz - selSz);
     otxt->string[otxt->str_nil] = 0;
     otxt->gap_start = otxt->str_nil + 1;
-  } else if ((otxt->state & (0x00000001 << (SHIFT + 10))) != 0) {
-// need testing looks wrong... explain
-    printf("insert mode\n");
+  } else if ((otxt->state & STATE_BIT_KEY_INSERT) != 0) {
+// insert mode
+      // if selection in insert mode, becomes replace seletion with char
+      // insert offset does not change
+      // if no selection, insert offset changes, as does gap_start
+      // deletion removes chars, which changes gap_end's position
+      // gap_delta is amount the gap changes, used to determine
+      // positions for get display
     if (selSz != 0)  sz = 0;
     otxt->gap_delta += sz;
     otxt->gap_end += sz;
@@ -817,6 +843,9 @@ text_buffer_delete(PhxObjectTextview *otxt) {
   if (sz == 0) {
       // nothing to <backspace>
     if (otxt->insert.offset == 0)  return;
+      // added for utf8
+    while ((otxt->string[(otxt->insert.offset - 1)] & 0x0C0) == 0x080)
+      otxt->insert.offset--;
   }
     // debugging verify of selection reversal 'no-no'
   if (sz < 0) {  puts("error, text_buffer_delete()"); return;  }
@@ -824,9 +853,9 @@ text_buffer_delete(PhxObjectTextview *otxt) {
     // if editing at end, don't move gap but move/add nil byte and gap_start
   if (otxt->release.offset == otxt->str_nil) {
       // on 'delete' moves nil sz amount, 0 if sz == 0
-    if ((otxt->state & (0x00000001 << (SHIFT + 11))) != 0) {
+    if ((otxt->state & STATE_BIT_KEY_DELETE) != 0) {
         // remove flag
-      otxt->state ^= (0x00000001 << (SHIFT + 11));
+      otxt->state ^= STATE_BIT_KEY_DELETE;
         // nothing to 'delete' at end of buffer, leave locations as is
       if (sz == 0)  return;
     }
@@ -862,8 +891,8 @@ text_buffer_delete(PhxObjectTextview *otxt) {
       }
 #endif
     }
-    if ((otxt->state & (0x00000001 << (SHIFT + 11))) != 0) {
-      otxt->state ^= (0x00000001 << (SHIFT + 11));
+    if ((otxt->state & STATE_BIT_KEY_DELETE) != 0) {
+      otxt->state ^= STATE_BIT_KEY_DELETE;
       if (!sz)  otxt->gap_end++, otxt->gap_delta++, sz++;
     }
 #if USE_MARKS
@@ -887,7 +916,7 @@ text_buffer_select_all(PhxObjectTextview *otxt) {
   location_for_offset(otxt, &otxt->release);
   cairo_region_t *crr;
   crr = cairo_region_create_rectangle(
-           (cairo_rectangle_int_t *)&otxt->draw_box);
+           (cairo_rectangle_int_t *)&otxt->mete_box);
   gdk_window_invalidate_region(otxt->iface->parent_window, crr, FALSE);
   cairo_region_destroy(crr);
 }
@@ -945,7 +974,7 @@ text_buffer_board_set(PhxObjectTextview *receiver, char *data, size_t sz) {
 
   cairo_region_t *crr;
   crr = cairo_region_create_rectangle(
-           (cairo_rectangle_int_t *)&receiver->draw_box);
+           (cairo_rectangle_int_t *)&receiver->mete_box);
   gdk_window_invalidate_region(receiver->iface->parent_window, crr, FALSE);
   cairo_region_destroy(crr);
 }
@@ -1038,6 +1067,9 @@ text_buffer_drag_release(PhxObjectTextview *otxt) {
 }
 
 #pragma mark *** Interface ***
+// XXX need testing, code above/at 256 shift of mapping and
+// realloc/malloc not yet verified
+// visible mapping test needed too
 
 static PhxObject *ui_object_create(PhxInterface *, PhxObjectType,
                                       PhxDrawHandler, int, int, int, int);
@@ -1052,20 +1084,29 @@ ui_interface_create(GtkDrawingArea *da, int x, int y, int w, int h) {
     puts("creation error: ui_interface_create... OBJS_PWR < 2");
     return NULL;
   }
+  int szof = (OBJS_PWR <= 8) ? 1 : ((OBJS_PWR <= 16) ? 2 : 4);
+  if (szof == 4) {
+    puts("exceeds design limits: ui_interface_create... OBJS_PWR > 16");
+    return NULL;
+  }
 
   PhxInterface *iface = malloc(sizeof(PhxInterface));
 
   iface->type = PHX_IFACE;
   iface->state = 1U << 16; // assigning room for 1 OBJS_ALLOC
-  iface->draw_box.x = (iface->mete_box.x = x);
-  iface->draw_box.y = (iface->mete_box.y = y);
+    // mete in da coords, draw in mete coords
+  iface->mete_box.x = x;
+  iface->mete_box.y = y;
   iface->draw_box.w = (iface->mete_box.w = w);
   iface->draw_box.h = (iface->mete_box.h = h);
+  iface->draw_box.x = 0;
+  iface->draw_box.y = 0;
 
   int aSz = OBJS_ALLOC * sizeof(PhxObject*);
   iface->objects = malloc(aSz);
   memset(iface->objects, 0, aSz);
-  aSz = w * h * sizeof(char);
+
+  aSz = w * h * szof;
   iface->event_map = malloc(aSz);
   memset(iface->event_map, 0, aSz);
 
@@ -1110,15 +1151,48 @@ ui_interface_create(GtkDrawingArea *da, int x, int y, int w, int h) {
   return iface;
 }
 
+// Interface mapping must always do walk from 0 to 65534. It may or may not
+// be visible. This should depend on state of interface 'boxes' and an
+// object's visablity.
+// The interface's event_map is a void *. It is intended to be cast as ether
+// a 'char' or 'short' pointer based on number of contained objects. I
+// believe 256 or less will be normal use, but allowed 65534 objects.
+// Currently assumes object deletion possible, in any location, so
+// walks to find first NULL.
+// Not to be used for updating!
 static void
 ui_interface_map(PhxInterface *iface, PhxObject *obj) {
 
-  int allot = (iface->state >> 16) << OBJS_PWR;
+  unsigned allot = (iface->state >> 16) << OBJS_PWR;
 
-  int ldx = 1;
+  unsigned ldx = 0;
   do {
-    if (iface->objects[ldx] == NULL) {
-      if ((ldx + 1) == allot) {
+    if (iface->objects[(++ldx)] == NULL) {
+        // check that can have a NULL terminator, that ldx+1 < allot
+      if (ldx == allot) {
+        if ((allot + OBJS_ALLOC) > 0x0FFFFU) {
+          puts("exceeds design limits: ui_interface_map... realloc");
+          return;
+        }
+        iface->state += 1U << 16;
+        if ( (allot <= 256) && ((allot + OBJS_ALLOC) > 256) ) {
+             // resize mapping area, needs to hold object indices > 256
+             // causes remapping of char indices to short indices
+          size_t aSz = iface->mete_box.w * iface->mete_box.h * sizeof(short);
+          short *eMap = malloc(aSz);
+          if (eMap == NULL) {
+            puts("malloc failure: ui_interface_map");
+            return;
+          }
+          memset(eMap, 0, aSz);
+          for (int x = 0; x < iface->mete_box.w; x++) {
+            for (int y = 0; y < (iface->mete_box.h * iface->mete_box.w);
+                            y += iface->mete_box.w)
+              eMap[(x + y)]= (((unsigned char *)iface->event_map)[(x + y)]);
+          }
+          free(iface->event_map);
+          iface->event_map = eMap;
+        }
         iface->state += 1U << 16;
         size_t newSz = (allot + OBJS_ALLOC) * sizeof(PhxObject*);
         PhxObject *newPtr = realloc(iface->objects, newSz);
@@ -1127,37 +1201,62 @@ ui_interface_map(PhxInterface *iface, PhxObject *obj) {
           return;
         }
         iface->objects = (PhxObject**)newPtr;
-        memset(&iface->objects[(ldx + 1)], 0,
+        memset(&iface->objects[ldx], 0,
                              (OBJS_ALLOC * sizeof(PhxObject*)));
+        allot += OBJS_ALLOC;
       }
       break;
     }
-    if (iface->objects[ldx] == obj)  break;
-    ldx++;
   } while (1);
 
+    // add iface to object being mapped
   obj->iface = iface;
+    // iface will now hold this object
   iface->objects[ldx] = obj;
-  int sxdx = obj->draw_box.x,
-      sydx = obj->draw_box.y;
-  int exdx = sxdx + obj->draw_box.w,
-      eydx = sydx + obj->draw_box.h;
-  if (exdx > iface->mete_box.w)  exdx = iface->mete_box.w;
-  if (eydx > iface->mete_box.h)  eydx = iface->mete_box.h;
-  eydx *= iface->mete_box.w;
-  sydx *= iface->mete_box.w;
 
-  for (int x = sxdx; x < exdx; x++) {
-    for (int y = sydx; y < eydx; y += iface->mete_box.w)
-      iface->event_map[(x + y)] = (char)ldx;
+  if (visible_get(obj)) {
+      // obtain 'event' box
+    int sxdx = obj->mete_box.x + obj->draw_box.x,
+        sydx = obj->mete_box.y + obj->draw_box.y;
+    int exdx = sxdx + obj->draw_box.w,
+        eydx = sydx + obj->draw_box.h;
+
+      // if margin + draw width exceed allocation
+      // force end to max size of mete
+    if (exdx > iface->mete_box.w)  exdx = iface->mete_box.w;
+    if (eydx > iface->mete_box.h)  eydx = iface->mete_box.h;
+      // in a stream of bytes, stride = iface->mete_box.w
+      // translate y in terms of stride
+    eydx *= iface->mete_box.w;
+    sydx *= iface->mete_box.w;
+
+    if (allot <= 256) {
+      for (int x = sxdx; x < exdx; x++) {
+        for (int y = sydx; y < eydx; y += iface->mete_box.w)
+          ((char*)iface->event_map)[(x + y)] = ldx;
+      }
+    } else {
+      for (int x = sxdx; x < exdx; x++) {
+        for (int y = sydx; y < eydx; y += iface->mete_box.w)
+          ((short*)iface->event_map)[(x + y)] = ldx;
+      }
+    }
   }
 }
 
+/* when an object becomes visible, must use refresh to map events */
+/* when interface reconfigures, must use refresh to map events */
 static void
 ui_interface_refresh(PhxInterface *iface) {
 
-  int mapSz = iface->mete_box.w * iface->mete_box.h * sizeof(char);
-  char *newPtr = malloc(mapSz);
+  unsigned allot = (iface->state >> 16) << OBJS_PWR;
+  size_t mapSz = iface->mete_box.w * iface->mete_box.h * sizeof(char);
+  unsigned mult = 1;
+  if (allot > 256) {
+    mult = sizeof(short)/sizeof(char);
+    mapSz *= mult;
+  }
+  void *newPtr = malloc(mapSz);
   if (newPtr == NULL) {
     puts("malloc failure: ui_interface_refresh");
     return;
@@ -1171,8 +1270,8 @@ ui_interface_refresh(PhxInterface *iface) {
   PhxObject *obj;
   while ((obj = iface->objects[(++ldx)]) != NULL) {
     if (visible_get(obj)) {
-      int sxdx = obj->draw_box.x,
-          sydx = obj->draw_box.y;
+      int sxdx = obj->mete_box.x + obj->draw_box.x,
+          sydx = obj->mete_box.y + obj->draw_box.y;
       int exdx = sxdx + obj->draw_box.w,
           eydx = sydx + obj->draw_box.h;
 
@@ -1181,9 +1280,16 @@ ui_interface_refresh(PhxInterface *iface) {
       eydx *= iface->mete_box.w;
       sydx *= iface->mete_box.w;
 
-      for (int x = sxdx; x < exdx; x++) {
-        for (int y = sydx; y < eydx; y += iface->mete_box.w)
-          iface->event_map[(x + y)] = (char)ldx;
+      if (mult == 1) {
+        for (int x = sxdx; x < exdx; x++) {
+          for (int y = sydx; y < eydx; y += iface->mete_box.w)
+            ((char*)iface->event_map)[(x + y)] = ldx;
+        }
+      } else {
+        for (int x = sxdx; x < exdx; x++) {
+          for (int y = sydx; y < eydx; y += iface->mete_box.w)
+            ((short*)iface->event_map)[(x + y)] = ldx;
+        }
       }
     }
   }
@@ -1227,8 +1333,8 @@ draw_textview(PhxObject *b, cairo_t *cr) {
 
   if ((tv->string == NULL) || (*tv->string == 0))  return;
 
-  double x = tv->draw_box.x,
-         y = tv->draw_box.y;
+  double x = tv->mete_box.x + tv->draw_box.x,
+         y = tv->mete_box.y + tv->draw_box.y;
   double font_em = tv->font_em;
 
   cairo_save(cr);
@@ -1254,45 +1360,57 @@ draw_textview(PhxObject *b, cairo_t *cr) {
   if ( (!focused) || (!sensitive_get((PhxObject*)tv)) )
     colour = 0.5;
   cairo_set_source_rgba(cr, colour, colour, colour, 1);
-  char *tPtr = draw_buffer;
+
+  unsigned char *tPtr = (unsigned char*)draw_buffer;
+  unsigned char *nPtr = tPtr;
+  unsigned char ch = *nPtr;
   do {
-    char *nPtr = strchr(tPtr, '\n');
-    if (nPtr != NULL)  *nPtr = 0;
     cairo_move_to(cr, x, (y + glyph_origin));
-      // repace tabs with movement
-    do {
-      char *tab = strchr(tPtr, '\t');
-      if (tab == NULL)  break;
-      *tab = 0;
-      cairo_show_text(cr, tPtr);
-      cairo_rel_move_to(cr, tv->glyph_widths['\t'], 0);
-        // re-insert back for case: insert block caret draw size
-      *tab = '\t';
-      tPtr = tab + 1;
-    } while (1);
-    cairo_show_text(cr, tPtr);
-    if (nPtr == NULL)  break;
+    while (ch >= 0x020)  ch = *(++nPtr);
+    ext_cairo_show_glyphs((char**)&tPtr, (nPtr - tPtr),
+                          cr, tv->font_name, CAIRO_FONT_SLANT_NORMAL,
+                               CAIRO_FONT_WEIGHT_NORMAL, tv->font_size);
+    if (ch == 0)  break;
+    if (ch != '\n') {
+      if (ch == '\t') {
+        double tab = tv->glyph_widths[0x20] * TAB_TEXT_WIDTH;
+        cairo_rel_move_to(cr, tab, 0);
+      }
+      //else if (ch == '\r')
+      //else if (ch == '\f')
+      ch = *(tPtr = (++nPtr));
+      continue;
+    }
     if ((y += font_em) >= endline)  break;
-    tPtr = nPtr + 1;
+    ch = *(tPtr = (++nPtr));
   } while (1);
 
   double x0, x1, y0, y1;
-  x0 = tv->insert.x + tv->draw_box.x - tv->bin.x;
-  x1 = tv->release.x + tv->draw_box.x - tv->bin.x;
-  y0 = tv->insert.y + tv->draw_box.y - tv->bin.y;
-  y1 = tv->release.y + tv->draw_box.y - tv->bin.y;
+  x0 = tv->insert.x + tv->mete_box.x + tv->draw_box.x - tv->bin.x;
+  x1 = tv->release.x + tv->mete_box.x + tv->draw_box.x - tv->bin.x;
+  y0 = tv->insert.y + tv->mete_box.y + tv->draw_box.y - tv->bin.y;
+  y1 = tv->release.y + tv->mete_box.y + tv->draw_box.y - tv->bin.y;
 
   if (tv->insert.offset == tv->release.offset) {
     if ( focused && sensitive_get((PhxObject*)tv) ) {
-      if ((tv->state & (0x00000001 << (SHIFT + 10))) != 0) {
-        int utf = draw_buffer[(tv->insert.offset - tempS.offset)];
+      if ((tv->state & STATE_BIT_KEY_INSERT) != 0) {
         cairo_set_source_rgb(cr, 0, 0, 0);
-        cairo_rectangle(cr, x0, y0, tv->glyph_widths[utf], font_em);
+        char *utxt = &draw_buffer[(tv->insert.offset - tempS.offset)];
+        char utf = *utxt;
+        int width;
+        if (utf == '\t')
+              width = tv->glyph_widths[0x20] * TAB_TEXT_WIDTH;
+        else  width = ext_cairo_glyph_advance(&utxt, cr, tv->font_name,
+             CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL, tv->font_size);
+        cairo_rectangle(cr, x0, y0, width, font_em);
         cairo_fill(cr);
         cairo_set_source_rgb(cr, 1, 1, 1);
         cairo_move_to(cr, x0, y0 + glyph_origin);
-        if (utf != '\t')
-          cairo_show_text(cr, (const char*)&utf);
+        if ( (utf != '\n') && (utf != '\t') ) {
+          utxt = &draw_buffer[(tv->insert.offset - tempS.offset)];
+          ext_cairo_show_glyph(&utxt, cr, tv->font_name,
+            CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL, tv->font_size);
+        }
       } else {
         cairo_set_source_rgb(cr, 0, 0, 0);
         cairo_rectangle(cr, x0, y0, 0.5, font_em);
@@ -1304,8 +1422,8 @@ draw_textview(PhxObject *b, cairo_t *cr) {
     if ( ((ui_interface_mouse_get(tv->iface) & MOUSE_DND) == MOUSE_DND)
         && (tv->drop.offset != tv->interim.offset) ) {
       double dx, dy;
-      dx = tv->drop.x + tv->draw_box.x - tv->bin.x;
-      dy = tv->drop.y + tv->draw_box.y - tv->bin.y;
+      dx = tv->drop.x + tv->mete_box.x + tv->draw_box.x - tv->bin.x;
+      dy = tv->drop.y + tv->mete_box.y + tv->draw_box.y - tv->bin.y;
       cairo_set_source_rgb(cr, 0, 0, 0);
       cairo_rectangle(cr, dx, dy, 0.5, font_em);
       cairo_fill(cr);
@@ -1316,9 +1434,11 @@ draw_textview(PhxObject *b, cairo_t *cr) {
       colour = 0.5;
     cairo_set_source_rgba(cr, 0, 0, colour, .2);
     if (tv->insert.y == tv->release.y) {
+        // single line selection rectangle
       cairo_rectangle(cr, x0, y0, (x1 - x0), font_em);
       cairo_fill(cr);
     } else {
+        // muti-line selection rectangles
       if (y0 > y1) {
           // needed for mouse movement, swap
         endline = x1, x1 = x0, x0 = endline;
@@ -1341,39 +1461,81 @@ draw_textview(PhxObject *b, cairo_t *cr) {
   cairo_restore(cr);
 }
 
+/* Currently only horizontal justified, not sure vertical should be considered.
+   Vertical gets dictated by font_origin. */
 static void
 draw_label(PhxObject *b, cairo_t *cr) {
 
-  PhxObjectTextview *label = (PhxObjectTextview*)b;
+  PhxObjectLabel *label = (PhxObjectLabel*)b;
 
   if ((label->string == NULL) || (*label->string == 0))  return;
 
   cairo_select_font_face(cr, label->font_name, CAIRO_FONT_SLANT_NORMAL,
                                                CAIRO_FONT_WEIGHT_NORMAL);
   cairo_set_font_size(cr, label->font_size);
-  cairo_text_extents_t search_extents;
-  cairo_text_extents(cr, label->string, &search_extents);
 
-  int bx = 0;
-  int whtsp = label->draw_box.w - search_extents.x_advance;
-  if (whtsp > 0) {
-    int position = label->state & HJST_MSK;
-    if      (position == HJST_LFT) {  whtsp = 0;  }
-    else if (position == HJST_CTR) {  whtsp /= 2; }
-    bx -= whtsp;
-  }
-
-  double x = label->draw_box.x,
-         y = label->draw_box.y;
-
+  double x = label->mete_box.x,
+         y = label->mete_box.y + label->draw_box.y;
   cairo_save(cr);
-  cairo_rectangle(cr, x, y, label->draw_box.w, label->draw_box.h);
+  cairo_rectangle(cr, x, y, label->mete_box.w, label->mete_box.h);
   cairo_clip(cr);
-
-  cairo_set_source_rgba(cr, 0, 0, 0, 1);
-  cairo_move_to(cr, x - bx, y + label->font_origin);
-  cairo_show_text(cr, label->string);
-
+    // if multi-line need each advance
+    // Note: single line labels already incorporated any tabs
+  int x_advance = 0, width = 0;
+  unsigned char *blPtr = (unsigned char*)label->string;
+  unsigned char ch, *nlPtr = (unsigned char*)strchr(label->string, '\n');
+  if (nlPtr == NULL) {
+      // not multi-line, 1 pass, width already known
+    x_advance = label->draw_box.w;
+    ch = 0;
+    goto nlp;
+  }
+  nlPtr = blPtr;
+  ch = *nlPtr;
+  do {
+    char *dummy = (char*)nlPtr;
+    while (ch >= 0x020)  ch = *(++nlPtr);
+    x_advance += ext_cairo_glyphs_advance(&dummy, ((char*)nlPtr - dummy),
+                          cr, label->font_name, CAIRO_FONT_SLANT_NORMAL,
+                             CAIRO_FONT_WEIGHT_NORMAL, label->font_size);
+    if ((ch != 0) && (ch != '\n')) {  // 0x00, 0x0A
+      if (ch == '\t') {  // 0x09
+        if (width == 0) {
+          cairo_text_extents_t search_extents;
+          char utf_str[4] = { 0x20, 0, 0, 0 };
+          cairo_text_extents(cr, (const char*)&utf_str, &search_extents);
+          width = TAB_TEXT_WIDTH * (unsigned)(search_extents.x_advance + 0.5);
+        }
+        x_advance += width;
+      }
+        // NOTE: does not handle these 'space' classifications, nor 'cntrl'
+      //else if (ch == '\r')  // 0x0D
+      //else if (ch == '\f')  // 0x0C
+      //else if (ch == '\v')  // 0x0B
+      ch = *(++nlPtr);
+      continue;
+    }
+    int bx, whtsp;
+nlp:
+    bx = 0;
+    whtsp = label->mete_box.w - x_advance;
+    if (whtsp > 0) {
+      int jstfy = label->state & HJST_MSK;
+      if      (jstfy == HJST_LFT) {  whtsp = label->draw_box.x;  }
+      else if (jstfy == HJST_CTR) {  whtsp /= 2; }
+      else                        {  whtsp -= label->draw_box.x;  }
+      bx -= whtsp;
+    }
+    cairo_set_source_rgba(cr, 0, 0, 0, 1);
+    cairo_move_to(cr, x - bx, y + label->font_origin);
+    ext_cairo_show_glyphs((char**)&blPtr, (nlPtr - blPtr),
+                          cr, label->font_name, CAIRO_FONT_SLANT_NORMAL,
+                               CAIRO_FONT_WEIGHT_NORMAL, label->font_size);
+    if (ch == 0)  break;
+    y += label->font_em;
+    ch = *(blPtr = (++nlPtr));
+    x_advance = 0;
+  } while (1);
   cairo_clip_preserve(cr);
   cairo_restore(cr);
 }
@@ -1386,8 +1548,8 @@ draw_button(PhxObject *b, cairo_t *cr) {
   double radius = button->draw_box.h / 6.5;
 
   double line_width = 0.5;
-  double x = button->draw_box.x + line_width;
-  double y = button->draw_box.y + line_width;
+  double x = button->mete_box.x + button->draw_box.x + line_width;
+  double y = button->mete_box.y + button->draw_box.y + line_width;
   double w = button->draw_box.w - (line_width * 2);
   double h = button->draw_box.h - (line_width * 2);
 
@@ -1427,8 +1589,8 @@ draw_combo_arrows(PhxObject *b, cairo_t *cr) {
   PhxObjectDrawing *odrw = (PhxObjectDrawing*)b;
 
   double line_width = 0.5;
-  double x = odrw->draw_box.x;
-  double y = odrw->draw_box.y - line_width;
+  double x = odrw->mete_box.x + odrw->draw_box.x;
+  double y = odrw->mete_box.y + odrw->draw_box.y - line_width;
   double w = odrw->draw_box.w;
   double h = odrw->draw_box.h + line_width;
 
@@ -1453,8 +1615,8 @@ draw_navigate(PhxObject *b, cairo_t *cr) {
   double radius = odrw->draw_box.h / 6.5;
 
   double line_width = 0.5;
-  double x = odrw->draw_box.x + line_width;
-  double y = odrw->draw_box.y + line_width;
+  double x = odrw->mete_box.x + odrw->draw_box.x + line_width;
+  double y = odrw->mete_box.y + odrw->draw_box.y + line_width;
   double w = odrw->draw_box.w - (line_width * 2);
   double h = odrw->draw_box.h - (line_width * 2);
   double sp = h / 5;
@@ -1544,35 +1706,23 @@ draw_vertical_line(PhxObject *b, cairo_t *cr) {
   PhxObjectDrawing *odrw = (PhxObjectDrawing*)b;
 
   cairo_set_source_rgba(cr, 0.2, 0.2, 0.2, 1);
-  cairo_rectangle(cr, odrw->draw_box.x, odrw->draw_box.y,
+  cairo_rectangle(cr, odrw->mete_box.x + odrw->draw_box.x,
+                      odrw->mete_box.y + odrw->draw_box.y,
                       0.5, odrw->draw_box.h);
   cairo_fill(cr);
 }
 
-static gboolean
-text_draw_event(PhxInterface *tport, cairo_t *cr, void *widget) {
-
-  (void)widget;
-  cairo_reset_clip(cr);
-
-     // only 1 object to tport
-  PhxObject *obj = tport->objects[1];
-  obj->_draw_cb(obj, cr);
-  return TRUE;
-}
-
 static void
-_ui_interface_draw(PhxInterface *iface, cairo_t *cr) {
+draw_interface(PhxInterface *iface, cairo_t *cr) {
 
   int ldx = (iface->type == PHX_IFACE);
   cairo_save(cr);
-    do {
-      PhxObject *obj = iface->objects[ldx];
+    PhxObject *obj = iface->objects[ldx];
+    while (obj != NULL) {
       if (visible_get(obj)) {
         if (obj->_draw_cb != NULL)  obj->_draw_cb(obj, cr);
         if (obj->child != NULL) {
             // walk through any children
-// what if no _draw_cb object
           PhxObject *add = obj->child;
           do {
             if (!(visible_get(add)))  break;
@@ -1581,12 +1731,13 @@ _ui_interface_draw(PhxInterface *iface, cairo_t *cr) {
           } while (add != NULL);
         }
       }
-    } while (iface->objects[(++ldx)] != NULL);
+      obj = iface->objects[(++ldx)];
+    }
   cairo_restore(cr);
 }
 
 static gboolean
-ui_bank_draw_event(PhxInterface *obank, cairo_t *cr, void *widget) {
+draw_bank(PhxBank *obank, cairo_t *cr, void *widget) {
 
   (void)widget;
   cairo_reset_clip(cr);
@@ -1597,16 +1748,52 @@ ui_bank_draw_event(PhxInterface *obank, cairo_t *cr, void *widget) {
   cairo_clip_preserve(cr);
   cairo_fill(cr);
 
-  int set = ((PhxBank*)obank)->display_indicies >> 16;
-  if (set != -1) {
-    PhxObjectLabel *olbl = (PhxObjectLabel*)obank->objects[(unsigned)set];
-    cairo_set_source_rgba(cr, 0, 0, 1, .2);
-    cairo_rectangle(cr, olbl->mete_box.x + 1, olbl->mete_box.y,
-                        olbl->mete_box.w, olbl->mete_box.h);
-    cairo_fill(cr);
-  }
+   // contents, includes hover highlighting
+   // currently not 'bin'-type drawing (treeview)
+  int hover = obank->display_indices >> 16;
+  int ldx = 0;
+  int y_incr = obank->draw_box.y;
+  cairo_save(cr);
+    PhxObject *obj = obank->objects[ldx];
+    while (obj != NULL) {
+        // does object get displayed? case: expander closed
+      if (visible_get(obj)) {
+          // NOTE: initial _draw_cb should be skipped
+          // does not draw buttons outline nor background
+          // child walk object
+        if (obj->child != NULL) {
+          PhxObject *add = obj->child;
+            // check if pointer hovering
+          if (ldx == hover) {
+            cairo_set_source_rgba(cr, 0, 0, 1, .2);
+            cairo_rectangle(cr, obank->draw_box.x, add->draw_box.y + y_incr,
+                                obank->draw_box.w, add->mete_box.h);
+            cairo_fill(cr);
+          }
+            // objects in bank are not translated to
+            // draw positions, temporary translate for drawing (swap)
+          do {
+            if (!(visible_get(add)))  break;
+            if (add->_draw_cb != NULL) {
+              int xm_swap = add->mete_box.x;
+              int ym_swap = add->mete_box.y;
+                // add margins of combo bank
+              add->mete_box.x -= xm_swap - 1;
+              add->mete_box.y -= ym_swap - y_incr;
+              add->_draw_cb(add, cr);
+              add->mete_box.x = xm_swap;
+              add->mete_box.y = ym_swap;
+            }
+            add = add->child;
+          } while (add != NULL);
+        } // end (obj->child != NULL)
+          // only occurs if visible, NULL could be used as empty seperator
+        y_incr += obj->child->mete_box.h;
+      } // end (visible_get(obj))
+      obj = obank->objects[(++ldx)];
+    }
+  cairo_restore(cr);
 
-  _ui_interface_draw(obank, cr);
   return TRUE;
 }
 
@@ -1620,7 +1807,7 @@ uio_draw_event(PhxInterface *iface, cairo_t *cr, void *widget) {
   cairo_rectangle(cr, 0, 0, iface->mete_box.w, iface->mete_box.h);
   cairo_clip(cr);
 
-  _ui_interface_draw(iface, cr);
+  draw_interface(iface, cr);
   return TRUE;
 }
 
@@ -1633,7 +1820,6 @@ ui_object_create(PhxInterface *iface, PhxObjectType type,
   if ((type >= PHX_OBJECT_LAST) || (type < 0))  return NULL;
 
   PhxObject *obj;
-
   size_t sz;
   if ((type == PHX_TEXTVIEW)
           || (type == PHX_ENTRY)
@@ -1655,8 +1841,8 @@ ui_object_create(PhxInterface *iface, PhxObjectType type,
   memset(obj, 0, sz);
 
   obj->type = type;
-  obj->draw_box.x = (obj->mete_box.x = x);
-  obj->draw_box.y = (obj->mete_box.y = y);
+  obj->mete_box.x = x;
+  obj->mete_box.y = y;
   obj->draw_box.w = (obj->mete_box.w = w);
   obj->draw_box.h = (obj->mete_box.h = h);
   obj->_draw_cb = draw;
@@ -1697,48 +1883,72 @@ ui_box_inset(PhxRectangle *box, int l, int t, int r, int b) {
   box->h -= t + b;
 }
 
-// returns a glyph table, does not attach to a text-type object
-// caller responible for allocated table
-// caller decides if attaches. done this way for later possible
-// cache of attributes, May store in iface? or something else
-// Labels on set up need one shot info.
-static char *
-ui_textview_font_set(PhxObjectTextview *otxt, int line_height) {
+/* was pre-tested for proper text based objects */
+/* sets objects variables based on desired line height and parameters */
+/* leaves cairo_t set with determined values */
+static void
+text_font_variables_set(PhxObject *obj,
+                        cairo_t *cr,
+                        char *font_name,
+                        int font_slant,
+                        int font_weight,
+                        int line_height) {
 
-  if ((otxt->type != PHX_TEXTVIEW) && (otxt->type != PHX_ENTRY)
-      && (otxt->type != PHX_LABEL) && (otxt->type != PHX_COMBO_LABEL) )
-    return NULL;
-
-  int box_width = otxt->iface->mete_box.w;
-  int box_height = otxt->iface->mete_box.h;
-
-  cairo_surface_t *surface;
-  surface = gdk_window_create_similar_surface(
-                                        otxt->iface->parent_window,
-                                        CAIRO_CONTENT_COLOR_ALPHA,
-                                        box_width, box_height);
-  cairo_t *cro = cairo_create(surface);
-  cairo_select_font_face(cro, FONT_NAME, CAIRO_FONT_SLANT_NORMAL,
-                                         CAIRO_FONT_WEIGHT_NORMAL);
+  cairo_select_font_face(cr, font_name, font_slant, font_weight);
 
   cairo_font_extents_t font_extents;
   double pixel_line_height = line_height;
   double font_size = line_height;
-  cairo_set_font_size(cro, pixel_line_height);
-  cairo_font_extents(cro, &font_extents);
+  cairo_set_font_size(cr, pixel_line_height);
+  cairo_font_extents(cr, &font_extents);
   while (pixel_line_height
           < (int)(font_extents.ascent + font_extents.descent)) {
     font_size -= 0.5;
-    cairo_set_font_size(cro, font_size);
-    cairo_font_extents(cro, &font_extents);
+    cairo_set_font_size(cr, font_size);
+    cairo_font_extents(cr, &font_extents);
   }
-  otxt->font_name   = FONT_NAME;
-  otxt->font_size   = font_size;
-  otxt->font_origin = font_extents.ascent;
-  otxt->font_em     = (int)(font_extents.ascent + font_extents.descent);
+    // select smallest object, no logic
+  PhxObjectLabel *olbl = (PhxObjectLabel*)obj;
+  olbl->font_name   = font_name;
+  olbl->font_size   = font_size;
+  olbl->font_origin = font_extents.ascent;
+  olbl->font_em     = (int)(font_extents.ascent + font_extents.descent);
+}
 
+/* Sets font based on global defines. But calculates font size
+   based on a desired line height. This is designed for semi to
+   very frequently edited text based objects. It stores a
+   portable character set glyph table along with a draw
+   surface/cairo_t for adjustments, and/or obtaining other
+   glyph info other than default when first initalized. */
+static void
+ui_textview_font_set(PhxObjectTextview *otxt, int line_height) {
+
+  if ( (otxt->type != PHX_TEXTVIEW) && (otxt->type != PHX_ENTRY) )
+    return;
+
+  int box_width = otxt->iface->mete_box.w;
+  int box_height = otxt->iface->mete_box.h;
+
+  cairo_surface_t *surface = otxt->surface;
+  cairo_t *cro = otxt->cro;
+  if (surface == NULL) {
+    surface = gdk_window_create_similar_surface(otxt->iface->parent_window,
+                                                CAIRO_CONTENT_COLOR_ALPHA,
+                                                box_width, box_height);
+    otxt->surface = surface;
+    cro = cairo_create(surface);
+    otxt->cro = cro;
+  }
+
+  text_font_variables_set((PhxObject*)otxt, cro,
+                        FONT_NAME, CAIRO_FONT_SLANT_NORMAL,
+                        CAIRO_FONT_WEIGHT_NORMAL, line_height);
+
+    /* create quick access to most used glyph widths */
   char *glyph_widths = malloc(128 * sizeof(char));
   memset(glyph_widths, 0, 0x20);
+  otxt->glyph_widths = glyph_widths;
 
   for (int idx = 0x20; idx <= 0x7e; idx++) {
     cairo_text_extents_t search_extents;
@@ -1749,19 +1959,14 @@ ui_textview_font_set(PhxObjectTextview *otxt, int line_height) {
   glyph_widths[0x7f] = 1;
     // want a size for good representation with block_caret
   glyph_widths[0]    = glyph_widths[0x20];
-  glyph_widths['\t'] = glyph_widths[0x20] << 1;
-
-  cairo_destroy(cro);
-  cairo_surface_destroy(surface);
-
-  return glyph_widths;
+  glyph_widths['\t'] = glyph_widths[0x20] * TAB_TEXT_WIDTH;
 }
 
 static void
 ui_textview_buffer_set(PhxObjectTextview *otxt, char *data) {
 
-  if ((otxt->type != PHX_TEXTVIEW) && (otxt->type != PHX_ENTRY)
-      && (otxt->type != PHX_LABEL) && (otxt->type != PHX_TEXTBUFFER))
+  if ( (otxt->type != PHX_TEXTVIEW) && (otxt->type != PHX_ENTRY)
+      && (otxt->type != PHX_LABEL) && (otxt->type != PHX_TEXTBUFFER) )
     return;
 
   if (otxt->string != NULL)  free(otxt->string);
@@ -1796,51 +2001,111 @@ ui_textview_buffer_set(PhxObjectTextview *otxt, char *data) {
 #endif
 }
 
-/* uses PhxObjectTextview metrics to calcualate extents x_advance */
-/* sPtr must be a c-string, but can return x_advance on <newline> */
-static int
-ui_text_extent_width(char *glyph_widths, char *sPtr) {
-
-  int x_advance = 0;
-  size_t s_len = strlen(sPtr);
-  if (s_len != 0) {
-    char *nPtr = memchr(sPtr, '\n', s_len);
-    if (nPtr == NULL)  nPtr = sPtr + s_len;
-    while (nPtr > sPtr)
-      x_advance += glyph_widths[(unsigned)(*sPtr)], sPtr++;
-  }
-  return x_advance;
-}
-
 /* returns white space of label in drawing box */
+/* because this is label it doesn't keep cairo_t, nor glyph widths */
 static int
-ui_label_set(PhxObjectLabel *olbl, char *str, int position) {
+ui_label_set(PhxObjectLabel *olbl, char *str, int jstfy) {
 
   if (olbl->type != PHX_LABEL)  return -1;
 
-  char *gw = ui_textview_font_set((PhxObjectTextview*)olbl, olbl->draw_box.h);
-  ui_textview_buffer_set((PhxObjectTextview*)olbl, str);
-  olbl->state &= ~HJST_MSK;
-  olbl->state |= position;
+  if (olbl->string != NULL)  free(olbl->string);
+  char *lstr = (str != NULL) ? str : "";
+  olbl->string = strdup(lstr);
 
-  int x_advance = ui_text_extent_width(gw, olbl->string);
-  int whtsp = olbl->draw_box.w - x_advance;
-  free(gw);
-  return whtsp;
+  int line_height = olbl->draw_box.h;
+    // get <newline> count to determine pixel line height of font
+  int ncnt = 0;
+  while (*lstr != 0) {
+    if (*lstr == '\n') ncnt++;
+    lstr++;
+  }
+  if (ncnt != 0)
+    line_height /= (ncnt + 1);
+
+    // NOTE: does not justify here, just sets value, done during draw_cb
+  olbl->state &= ~HJST_MSK;
+  olbl->state |= jstfy;
+
+  int box_width = olbl->iface->mete_box.w;
+  int box_height = olbl->iface->mete_box.h;
+
+  cairo_surface_t *surface = gdk_window_create_similar_surface(
+                                        olbl->iface->parent_window,
+                                        CAIRO_CONTENT_COLOR_ALPHA,
+                                        box_width, box_height);
+  cairo_t *cro = cairo_create(surface);
+
+reeval:
+  text_font_variables_set((PhxObject*)olbl, cro,
+                        FONT_NAME, CAIRO_FONT_SLANT_NORMAL,
+                        CAIRO_FONT_WEIGHT_NORMAL, line_height);
+
+    // note on reeval, tab width change, so width = 0
+  int x_advance = 0, max_advance = 0, width = 0;
+  char *sPtr = olbl->string;
+    // NOTE: does not consider all 'space' classifications, nor 'cntrl'
+  while (*sPtr != 0) {
+    if (*sPtr == '\t') {
+      if (width == 0) {
+        cairo_text_extents_t search_extents;
+        char utf_str[4] = { 0x20, 0, 0, 0 };
+        cairo_text_extents(cro, (const char*)&utf_str, &search_extents);
+        width = TAB_TEXT_WIDTH * (unsigned)(search_extents.x_advance + 0.5);
+      }
+      x_advance += width;
+      sPtr++;
+      continue;
+    }
+    if (*sPtr == '\n') {
+      if (x_advance > max_advance)  max_advance = x_advance;
+      x_advance = 0;
+      sPtr++;
+      continue;
+    }
+    x_advance += ext_cairo_glyph_advance(&sPtr, cro, olbl->font_name,
+                    CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL,
+                    olbl->font_size);
+  }
+
+    // now verify x_advance fits olbl->draw_box.w
+    // if exceeds, reset font variables based on x_advance
+  if (max_advance > x_advance)  x_advance = max_advance;
+  if (x_advance > olbl->mete_box.w) {
+      // assume user did not set draw_box with margins
+      // only for sake of resize math
+    x_advance += 2 * BUTTON_TEXT_MIN;
+      // line_height / x_advance = x / olbl->mete_box.w
+    line_height = (line_height * olbl->mete_box.w)  / x_advance;
+    goto reeval;
+  }
+  olbl->draw_box.w = x_advance;
+
+    // assume possible resize, and since no vertical justify
+    // want vertical centered
+  line_height = olbl->font_em;
+  if (ncnt != 0)
+    line_height += olbl->font_em * ncnt;
+  int whtsp = (olbl->draw_box.h - line_height) / 2;
+  olbl->draw_box.y += whtsp;
+
+  cairo_destroy(cro);
+  cairo_surface_destroy(surface);
+  return x_advance;
 }
 
 static int
 ui_button_label_create(PhxInterface *iface, PhxObjectButton *obtn,
-                                                   char *str, int position) {
-  PhxObjectLabel *olbl;
-  olbl = (PhxObjectLabel*)ui_object_create(iface, PHX_LABEL, draw_label,
-                                  obtn->draw_box.x + 1, obtn->draw_box.y + 1,
-                                  obtn->draw_box.w - 2, obtn->draw_box.h - 2);
-  obtn->child = (PhxObject*)olbl;
-  return ui_label_set(olbl, str, position);
+                                                      char *str, int jstfy) {
+  int mete_x = obtn->mete_box.x + obtn->draw_box.x + 1;
+  int mete_y = obtn->mete_box.y + obtn->draw_box.y + 1;
+  PhxObject *olbl = ui_object_create(iface, PHX_LABEL, draw_label,
+                                    mete_x, mete_y,
+                                    obtn->draw_box.w - 2, obtn->draw_box.h - 2);
+  obtn->child = olbl;
+  return ui_label_set((PhxObjectLabel*)olbl, str, jstfy);
 }
 
-#pragma mark *** Popup ***
+#pragma mark *** Bank ***
 
 // menu: all strings are bank, default never changes
 //       first object should be a copy of button's child object
@@ -1849,202 +2114,90 @@ ui_button_label_create(PhxInterface *iface, PhxObjectButton *obtn,
 // combo: first string default with obtn coordinates
 // combo: default gets altered by bank objects
 // but must maintain mete/draw boxes of 'default'
+
 static void
-ui_bank_create(PhxObjectType type, PhxObjectButton *obtn,
-                              PhxResultHandler rcb, int number_strings, ...) {
+bank_replace_combo_contents(PhxBank *ibank) {
 
-  if ((type != PHX_BANK_MENU) && (type != PHX_BANK_COMBO))  return;
-
-  PhxObjectLabel *olbl;
-  char *gw;
-
-  PhxBank *obank = malloc(sizeof(PhxBank));
-  memset(obank, 0, sizeof(PhxBank));
-  obtn->bank = obank;
-  obank->type = type;
-  obank->state = 1U << 16; // assigning room for 1 OBJS_ALLOC
-  obank->actuator = obtn;
-  obank->display_indicies = 0; // first object displayed
-  obank->_result_cb = rcb;
-
-  int aSz = OBJS_ALLOC * sizeof(PhxObject*);
-  obank->objects = malloc(aSz);
-  memset(obank->objects, 0, aSz);
-  int allot = (obank->state >> 16) << OBJS_PWR;
-
-  int total_height = 0;
-  int max_len = 0;
-
-    // create label object even if 0 strings
-    // direct from obtn is used for display (in iface positioning)
-    // bank to use 0,0 coorindinates
-  olbl = (PhxObjectLabel*)ui_object_create(obtn->iface,
-                                PHX_LABEL, draw_label,
-                                obtn->draw_box.x + 1, obtn->draw_box.y + 1,
-                                obtn->draw_box.w - 2, obtn->draw_box.h - 2);
-  gw = ui_textview_font_set((PhxObjectTextview*)olbl, olbl->draw_box.h);
-  olbl->state &= ~HJST_MSK;
-  olbl->state |= HJST_LFT;
-
-  if (number_strings <= 0) {
-    olbl->string = strdup("");
-    obank->objects[0] = (PhxObject*)olbl;
-  } else {
-    int scnt = 0;
-    va_list arg;
-    va_start(arg, number_strings);
-      char *str = va_arg(arg, char*);
-      olbl->string = strdup(str);
-      do {
-        char *nPtr = strchr(str, '\n');
-        int x_advance = ui_text_extent_width(gw, str);
-        if (x_advance > max_len)  max_len = x_advance;
-        total_height += olbl->font_em;
-        if (nPtr == NULL)  break;
-        olbl->mete_box.y += olbl->font_em;
-        olbl->draw_box.y += olbl->font_em;
-        str = nPtr + 1;
-      } while (1);
-      obank->objects[0] = (PhxObject*)olbl;
-      while ((++scnt) < number_strings) {
-        if ( (obank->objects[scnt] == NULL)
-            && ((scnt + 1) == allot) ) {
-          obank->state += 1U << 16;
-          allot = (obank->state >> 16) << OBJS_PWR;
-          size_t newSz = allot * sizeof(PhxObject*);
-          PhxObject *newPtr = realloc(obank->objects, newSz);
-          if (newPtr == NULL) {
-            puts("realloc failure: ui_bank_create");
-            return;
-          }
-          obank->objects = (PhxObject**)newPtr;
-          memset(&obank->objects[(scnt + 1)], 0,
-                               (OBJS_ALLOC * sizeof(PhxObject*)));
-        }
-        olbl = (PhxObjectLabel*)ui_object_create((PhxInterface*)obank,
-                                    PHX_LABEL, draw_label, 0, 0,
-                                    obtn->draw_box.w - 2, obtn->draw_box.h - 2);
-        olbl->font_em = ((PhxObjectLabel*)obank->objects[0])->font_em;
-        olbl->font_name = ((PhxObjectLabel*)obank->objects[0])->font_name;
-        olbl->font_size = ((PhxObjectLabel*)obank->objects[0])->font_size;
-        olbl->font_origin = ((PhxObjectLabel*)obank->objects[0])->font_origin;
-        olbl->state &= ~HJST_MSK;
-        olbl->state |= HJST_LFT;
-        char *str = va_arg(arg, char*);
-        olbl->string = strdup(str);
-        do {
-          char *nPtr = strchr(str, '\n');
-          int x_advance = ui_text_extent_width(gw, str);
-          if (x_advance > max_len)  max_len = x_advance;
-          total_height += olbl->font_em;
-          if (nPtr == NULL)  break;
-          olbl->mete_box.y += olbl->font_em;
-          olbl->draw_box.y += olbl->font_em;
-          str = nPtr + 1;
-        } while (1);
-        obank->objects[scnt] = (PhxObject*)olbl;
-      }
-    va_end(arg);
-  }
-
-  olbl = (PhxObjectLabel*)obank->objects[0];
-    // without a label set anyway
-  olbl->draw_box.x += BUTTON_TEXT_MIN;
-  olbl->mete_box.w = (olbl->draw_box.w = (2 * BUTTON_TEXT_MIN) + max_len);
-    // set as default,, object in its own right
-  obank->display_object = malloc(sizeof(PhxObjectLabel));
-  memmove(obank->display_object, olbl, sizeof(PhxObjectLabel));
-  obtn->child = obank->display_object;
-
-   // now all in bank must set to bank's mete/draw boxes
-  obank->draw_box.x = (obank->mete_box.x = 0);
-  obank->draw_box.y = (obank->mete_box.y = 0);
-    // no arrows included
-  obank->draw_box.w = (obank->mete_box.w = olbl->mete_box.w + 2);
-  obank->draw_box.h = (obank->mete_box.h = total_height + 2);
-  ui_box_inset(&obank->draw_box, 1, 1, 1, 1);
-  obank->parent_window = NULL;
-  aSz = obank->mete_box.w * obank->mete_box.h * sizeof(char);
-  obank->event_map = malloc(aSz);
-  memset(obank->event_map, 0, aSz);
-
-    // now adjust all in bank, while adding to map
-  total_height = 0;
-  int sxdx = 0;
-  int exdx = obank->mete_box.w;
-  int ldx = 0;
-  PhxObject *obj = obank->objects[ldx];
-  do {
-      // offset draw by above inset, want mete 0 for events
-    obj->mete_box.x = 0;
-    obj->draw_box.x = 1 + BUTTON_TEXT_MIN;
-      // mete box moved by inset
-    obj->mete_box.y = (obj->draw_box.y = total_height + 1);
-    obj->mete_box.w = (obj->draw_box.w = obank->draw_box.w);
-    int sydx = obj->draw_box.y;
-    int eydx = sydx + obj->draw_box.h;
-    eydx *= obank->mete_box.w;
-    sydx *= obank->mete_box.w;
-    for (int x = sxdx; x < exdx; x++) {
-      for (int y = sydx; y < eydx; y += obank->mete_box.w)
-        obank->event_map[(x + y)] = (char)ldx;
+  int old_selection = ibank->flag >> 16;
+  int new_selection = ibank->display_indices & 0x0FFFF;
+  if ((unsigned)new_selection >= (unsigned)(ibank->flag & 0x0FFFF))
+    return;
+  if (old_selection != new_selection) {
+    ibank->flag = (ibank->flag & 0x0FFFF) | (new_selection << 16);
+    PhxObject *oldPtr = ibank->objects[old_selection];
+    PhxObject *newPtr = ibank->objects[new_selection];
+    ibank->actuator->child->child = newPtr->child;
+    int conf_dx, conf_dy;
+    if (newPtr->child == NULL) {
+      conf_dx = newPtr->mete_box.x + newPtr->draw_box.x;
+      conf_dy = newPtr->mete_box.y + newPtr->draw_box.y;
+    } else {
+      conf_dx = newPtr->child->mete_box.x;
+      conf_dy = newPtr->child->mete_box.y;
     }
-    total_height += obj->draw_box.h;
-  } while ((obj = obank->objects[(++ldx)]) != NULL);
-
-/* must add to each object in bank, late add due to 'w' based om max_len */
-/* could attach only to [0], on selection of others, attach then from [0] */
-/* popup should ignore this */
-  olbl = (PhxObjectLabel*)obtn->child;
-  int end_x = olbl->draw_box.x + olbl->draw_box.w;
-  if (obtn->type == PHX_BUTTON_COMBO) {
-      // calc arrows start point, or transtion location
-      // add on combo's signature arrows, make tight by reducing end_x
-    olbl->child = ui_object_create(obtn->iface, PHX_DRAWING, draw_combo_arrows,
-                                  end_x - BUTTON_TEXT_MIN,
-                                  olbl->draw_box.y + 1,
-                                  (67.824176 / 152.615385) * olbl->draw_box.h,
-                                  olbl->draw_box.h - 2);
-      // re-calculate obj (button) size based on longest line + signature arrows
-    end_x += olbl->child->mete_box.w;
+    if (oldPtr->child == NULL) {
+      conf_dx -= oldPtr->mete_box.x + oldPtr->draw_box.x;
+      conf_dy -= oldPtr->mete_box.y + oldPtr->draw_box.y;
+    } else {
+      conf_dx -= oldPtr->child->mete_box.x;
+      conf_dy -= oldPtr->child->mete_box.y;
+    }
+    if (newPtr->child != NULL) {
+      PhxObject *add = newPtr->child;
+      do {
+        add->mete_box.x -= conf_dx;
+        add->mete_box.y -= conf_dy;
+        add = add->child;
+      } while (add != NULL);
+    }
+    if (oldPtr->child != NULL) {
+      PhxObject *add = oldPtr->child;
+      do {
+        add->mete_box.x += conf_dx;
+        add->mete_box.y += conf_dy;
+        add = add->child;
+      } while (add != NULL);
+    }
   }
-
-    // base size on "old width's position less new width's position"
-  end_x = (obtn->draw_box.x + obtn->draw_box.w) - end_x;
-
-  obtn->draw_box.w -= end_x;
-  obtn->mete_box.w -= end_x;
-
-  free(gw);
 }
 
 static _Bool
-ui_bank_meter(PhxBank *obank, GdkEvent *event, void *widget) {
+bank_meter(PhxBank *obank, GdkEvent *event, void *widget) {
 
   if (event->type == GDK_MOTION_NOTIFY) {
-    obank->display_indicies &= 0x0FFFFU;
+    int enter_indices = obank->display_indices;
+      // clear out high order, the current highlit selection
+    obank->display_indices &= 0x0FFFFU;
       //allows 65534 entries, -1 reserve as no selection
     int x = (int)(event->motion.x);
     int y = (int)(event->motion.y);
-    if ( ((unsigned)x >= (unsigned)obank->mete_box.w)
-        || ((unsigned)y >= (unsigned)obank->mete_box.h)) {
-      obank->display_indicies |= 0xFFFF0000U;
+    if ( ((unsigned)(x - obank->draw_box.x) >= (unsigned)obank->draw_box.w)
+      || ((unsigned)(y - obank->draw_box.y) >= (unsigned)obank->draw_box.h) ) {
+      obank->display_indices |= 0xFFFF0000U;
     } else {
       int idx = 0;
-      do {
-        PhxObject *olbl = obank->objects[idx];
-        if ((olbl->mete_box.y + olbl->mete_box.h) >= y)  break;
-      } while (obank->objects[(++idx)] != NULL);
+      PhxObject *obj = obank->objects[idx];
+      if (obj != NULL) {
+        int y_incr = obank->draw_box.y;
+        do {
+          if (visible_get(obj)) {
+            if ((y_incr += obj->child->mete_box.h) >= y)  break;
+          }
+        } while ((obj = obank->objects[(++idx)]) != NULL);
+      }
       if (obank->objects[idx] == NULL)
-        obank->display_indicies |= 0xFFFF0000U;
+        obank->display_indices |= 0xFFFF0000U;
       else
-        obank->display_indicies |= (unsigned)idx << 16;
+        obank->display_indices |= (unsigned)idx << 16;
     }
-    cairo_region_t *crr;
-    crr = cairo_region_create_rectangle(
-             (cairo_rectangle_int_t *)&obank->mete_box);
-    gdk_window_invalidate_region(obank->parent_window, crr, FALSE);
-    cairo_region_destroy(crr);
+
+    if (enter_indices != obank->display_indices) {
+      cairo_region_t *crr;
+      crr = cairo_region_create_rectangle(
+               (cairo_rectangle_int_t *)&obank->mete_box);
+      gdk_window_invalidate_region(obank->parent_window, crr, FALSE);
+      cairo_region_destroy(crr);
+    }
     return TRUE;
   }
   if (event->type == GDK_BUTTON_PRESS) {
@@ -2056,18 +2209,16 @@ ui_bank_meter(PhxBank *obank, GdkEvent *event, void *widget) {
     return TRUE;
   }
   if (event->type == GDK_BUTTON_RELEASE) {
-    int set = obank->display_indicies >> 16;
+    int set = obank->display_indices >> 16;
     _Bool changed = (set != -1);
     if (changed) {
-      changed = (set != (int)(obank->display_indicies & 0x0FFFFU));
-      if (changed) {
-        char *str = ((PhxObjectLabel*)obank->objects[(unsigned)set])->string;
-        ((PhxObjectLabel*)obank->display_object)->string = str;
-      }
-      obank->display_indicies = set;
+      changed = (set != (int)(obank->display_indices & 0x0FFFFU));
+      obank->display_indices = set;
+      if (changed)
+        bank_replace_combo_contents(obank);
     }
-    set = obank->display_indicies & 0x0FFFFU;
-    obank->display_indicies = (set << 16) | set;
+    set = obank->display_indices & 0x0FFFFU;
+    obank->display_indices = (set << 16) | set;
 
       // following needed because of grab
     PhxObjectButton *obtn = obank->actuator;
@@ -2096,7 +2247,264 @@ ui_bank_meter(PhxBank *obank, GdkEvent *event, void *widget) {
   return FALSE;
 }
 
+PhxObjectButton *
+ui_bank_create(PhxObjectType type, PhxObjectButton *obtn,
+                                                PhxResultHandler rcb) {
+  if ((type != PHX_BANK_MENU) && (type != PHX_BANK_COMBO))  return NULL;
+
+    // initialize
+  PhxBank *obank = malloc(sizeof(PhxBank));
+  memset(obank, 0, sizeof(PhxBank));
+
+  obank->type = type;
+  obank->state = 1U << 16; // assigning room for 1 OBJS_ALLOC
+    // set obank surface to reflect content 
+  obank->mete_box.w = obtn->child->mete_box.w;
+  obank->mete_box.h = obtn->child->mete_box.h;
+  obank->draw_box.w = obtn->child->mete_box.w;
+  obank->draw_box.h = obtn->child->mete_box.h;
+
+  int aSz = OBJS_ALLOC * sizeof(PhxObject*);
+  obank->objects = malloc(aSz);
+  memset(obank->objects, 0, aSz);
+    // keep original design of button
+  obank->objects[0] = (PhxObject*)obtn;
+
+  obank->parent_window = NULL;
+    // no config
+    // actuator delay, to be new button returned
+    // display_indices = 0;
+  obank->flag = 1;  // creating first member
+  obank->_result_cb = rcb;
+
+    // need mete and shell duplicated
+  PhxObjectButton *dup = (PhxObjectButton*)ui_object_create(obtn->iface,
+                                           obtn->type, obtn->_draw_cb,
+                                           obtn->mete_box.x, obtn->mete_box.y,
+                                           obtn->mete_box.w, obtn->mete_box.h);
+  obank->actuator = dup;
+    // default: as origin design
+  dup->state = obtn->state;
+    // copy draw_box, user may have adjusted from ui_object_create()
+  dup->draw_box.x = obtn->draw_box.x;
+  dup->draw_box.y = obtn->draw_box.y;
+  dup->draw_box.w = obtn->draw_box.w;
+  dup->draw_box.h = obtn->draw_box.h;
+  dup->child = obtn->child;
+  dup->_event_cb = obtn->_event_cb;
+  dup->bank = obank;
+    // if combo button:
+  if (obtn->type == PHX_BUTTON_COMBO) {
+      // set y,h to obtn's label + 1px margin
+    obank->combo_arrows = ui_object_create(obtn->iface, PHX_DRAWING,
+                            draw_combo_arrows,
+                            0,
+                            obtn->child->mete_box.y + 1,
+                            (67.824176 / 152.615385) * obtn->child->mete_box.h,
+                            obtn->child->mete_box.h - 2);
+      // add right margin to combo arrows
+    int end_x = 3;
+    obank->combo_arrows->mete_box.w += end_x;
+      // place mete at end of obtn's label mete
+    end_x = obtn->child->mete_box.x + obtn->child->mete_box.w;
+    obank->combo_arrows->mete_box.x = end_x;
+      // draw starts at 0 of mete_box
+    dup->child = obank->combo_arrows;
+      // increase widths of dup button's boxes
+    dup->mete_box.w += obank->combo_arrows->mete_box.w;
+    dup->draw_box.w += obank->combo_arrows->mete_box.w;
+    dup->child->child = obtn->child;
+      // obank for combos draws within a 1px margin, add to default
+    obank->mete_box.w += 2;  // .x.y 0
+    obank->mete_box.h += 2;
+    obank->draw_box.x += 1;  // .w.h 0
+    obank->draw_box.y += 1;
+  }
+  return dup;
+}
+
 static void
+_seek_LIFO_free(PhxObject *in) {
+  if (in->child != NULL) {
+   _seek_LIFO_free(in->child);
+   free(in->child);
+  }
+  return;
+}
+
+/* No plans for a _row_replace(), as don't see benefit in a
+   delete/insert combination. Forces special restrictions. */
+
+// start, end are inclusive set [0 ... 0] delete start 0 to delete end 0
+//                              [0 ... 1] delete start 0 to delete end 1
+//                              [0 ...-1] delete all
+// given: start <= end
+void
+ui_bank_row_delete(PhxBank *ibank, int start_idx, int end_idx) {
+
+  if (ibank == NULL)  return;
+
+  int new_selection,
+      current_selected = ibank->flag >> 16;
+    // get object count
+  unsigned last_idx = ibank->flag & 0x0FFFFU;
+  if (last_idx == 0)  return;
+
+    // count to index
+  last_idx--;
+    // assume deletion above number of objects is bad parameter
+  if ((unsigned)start_idx > last_idx)  return;
+    // user can pass -1 as end, delete all from start to list's end
+  if ((unsigned)end_idx > last_idx)  end_idx = last_idx;
+
+  int remove = end_idx - start_idx + 1;
+  int remaining = last_idx - end_idx;
+
+  if ((new_selection = current_selected) > end_idx) {
+      // does not need contents replaced, flag/indices unchanged
+    new_selection = current_selected - remove;
+  } else if (current_selected >= start_idx) {
+      // needs contents replaced
+    new_selection = start_idx - 1;
+    if (new_selection == -1) {
+      if (remaining == 0)
+        new_selection = 0;
+      else
+        new_selection = end_idx + 1;
+    }
+    ibank->display_indices = new_selection;
+    bank_replace_combo_contents(ibank);
+    if ((unsigned)(new_selection -= remove) > (unsigned)end_idx)
+      new_selection = 0;
+  }
+
+    // free objects before moving remains into place
+  PhxObject **ohndl = &ibank->objects[start_idx];
+  while (start_idx <= end_idx) {
+    PhxObject *obj = ibank->objects[start_idx];
+    if (obj->child != 0) {
+      _seek_LIFO_free(obj->child);
+      if ( (visible_get(obj)) && (visible_get(obj->child)) )
+        ibank->mete_box.h -= obj->child->mete_box.h;
+      free(obj->child);
+    }
+    free(obj);
+      // assign NULL, could be no replacement following
+    ibank->objects[start_idx] = NULL;
+    start_idx++;
+  }
+
+    // move remains into free(d) slot(s)
+  if (remaining != 0) {
+    memmove(ohndl, &ibank->objects[(end_idx + 1)],
+                                       (remaining * sizeof(PhxObject*)));
+      // fill slot after with NULL
+    ibank->objects[(remaining + end_idx)] = NULL;
+  }
+
+    // set ibank data, last_idx as count
+  last_idx = (ibank->flag & 0x0FFFFU) - remove;
+  ibank->objects[last_idx] = NULL;
+  ibank->flag = (new_selection << 16) | last_idx;
+  ibank->display_indices = (new_selection << 16) | new_selection;
+  if ( (new_selection == 0) && (last_idx == 0) )
+    ibank->actuator->child->child = NULL;
+
+  cairo_region_t *crr;
+  crr = cairo_region_create_rectangle(
+           (cairo_rectangle_int_t *)&ibank->actuator->mete_box);
+  gdk_window_invalidate_region(
+             ibank->actuator->iface->parent_window, crr, FALSE);
+  cairo_region_destroy(crr);
+}
+
+// a button without a child is just an event box, with the
+// draw_box as its event area.
+
+// for multiple, possible non-sequential insertions, caller responsible
+// to parser individual objects
+// -1 to be used as append or get count if desired
+static void
+ui_bank_row_insert(PhxBank *ibank, PhxObjectButton *abtn,
+                                           int insert_idx, _Bool rs_actr) {
+  if (ibank == NULL)  return;
+    // check if room for insertion
+  if ((ibank->flag & 0x0FFFFU) == 0x0FFFFU) {
+    puts("maximum objects already assigned");
+    return;
+  }
+    // nab last index while using 'flag'
+  unsigned end_idx = (ibank->flag & 0x0FFFFU) - 1;
+  if (end_idx == -1U)  end_idx = 0;
+
+    // continue check for allocated space for insertion
+  unsigned allot = (ibank->state >> 16) << OBJS_PWR;
+  if ((unsigned)(ibank->flag & 0x0FFFFU) == allot) {
+    size_t newSz = allot + OBJS_ALLOC;
+    PhxObject **newHnd = realloc(ibank->objects, newSz);
+    if (newHnd == NULL) {
+      puts("realloc failure: ui_bank_row_insert");
+      return;
+    }
+    memset(&ibank->objects[allot], 0, (OBJS_ALLOC * sizeof(PhxObject*)));
+    ibank->objects = newHnd;
+    ibank->state += 0x00010000U;
+  }
+
+    // set ibank 'metrics' to account for new addition
+  if (visible_get((PhxObject*)abtn)) {
+    int width = abtn->draw_box.w, 
+        height = abtn->draw_box.h;
+    if ( (abtn->child != NULL) && (visible_get(abtn->child)) ) {
+      width  = abtn->child->mete_box.w;
+      height = abtn->child->mete_box.h;
+    }
+      // adjust popup height
+    ibank->mete_box.h += height;
+    ibank->draw_box.h += height;
+      // grab popup width, adjust if needed
+    int current_object_width = ibank->draw_box.w;
+    if (width > current_object_width) {
+        // amount needed to increase size
+      int delta = width - current_object_width;
+      ibank->mete_box.w += delta;
+      ibank->draw_box.w += delta;
+      if (rs_actr) {
+          // resize of actuator requested
+        PhxObjectButton *obtn = (PhxObjectButton*)ibank->actuator;
+        obtn->mete_box.w += delta;
+        obtn->draw_box.w += delta;
+        if (ibank->type == PHX_BANK_COMBO)
+            // offset arrows to end of new size
+          ibank->combo_arrows->mete_box.x += delta;
+      }
+    }
+  } // end (visible_get(abtn))
+
+    // add new insert button to bank
+  end_idx += 1;
+  if ((unsigned)insert_idx > end_idx)  insert_idx = end_idx;
+  unsigned remaining = end_idx - (unsigned)insert_idx;
+  if (remaining != 0) {
+    memmove(&ibank->objects[insert_idx], &ibank->objects[(insert_idx + 1)],
+                                          (remaining * sizeof(PhxObject*)));
+  }
+  ibank->objects[insert_idx] = (PhxObject*)abtn;
+  ibank->flag += 1;
+  unsigned selected = ibank->flag >> 16;
+  if ((unsigned)insert_idx <= selected) {
+    ibank->flag += 0x00010000U;
+    ibank->display_indices = ibank->flag >> 16; 
+  }
+}
+
+void
+ui_bank_row_append(PhxBank *ibank, PhxObjectButton *abtn, _Bool rs_actr) {
+  ui_bank_row_insert(ibank, abtn, -1, rs_actr);
+}
+
+
+void
 ui_bank_combo_run(PhxInterface *fport, GdkEvent *event, PhxObject *obj) {
 
   (void)event;
@@ -2117,24 +2525,33 @@ ui_bank_combo_run(PhxInterface *fport, GdkEvent *event, PhxObject *obj) {
   obank->parent_window = gtk_widget_get_window(combo_popup);
 
   g_signal_connect_swapped(G_OBJECT(combo_popup), "draw",
-                                G_CALLBACK(ui_bank_draw_event), obank);
+                                G_CALLBACK(draw_bank), obank);
     // NOTE: can't change cursor unless connect to top-most
   g_signal_connect_swapped(G_OBJECT(combo_popup), "button-press-event",
-                                G_CALLBACK(ui_bank_meter), obank);
+                                G_CALLBACK(bank_meter), obank);
   g_signal_connect_swapped(G_OBJECT(combo_popup), "button-release-event",
-                                G_CALLBACK(ui_bank_meter), obank);
+                                G_CALLBACK(bank_meter), obank);
     // connections not auto by gtk
   gtk_widget_add_events(combo_popup, GDK_POINTER_MOTION_MASK);
   g_signal_connect_swapped(G_OBJECT(combo_popup), "motion-notify-event",
-                                G_CALLBACK(ui_bank_meter), obank);
+                                G_CALLBACK(bank_meter), obank);
 
     // set position based on active text
-  int delta_y = obtn->draw_box.y;
-  unsigned set = obank->display_indicies & 0x0FFFFU;
-   // set as selected
-  obank->display_indicies |= (unsigned)set << 16;
-  PhxObjectLabel *olbl = (PhxObjectLabel*)obank->objects[set];
-  delta_y -= (olbl->draw_box.y - 1);
+  unsigned set = obank->display_indices & 0x0FFFFU;
+    // set as selected
+  obank->display_indices |= (unsigned)set << 16;
+
+    // offset window so selected in center of button
+  int delta_y = 0;
+  for (unsigned q = 0; q < set; q++) {
+    PhxObject *qPtr = obank->objects[q];
+    if (visible_get(qPtr)) {
+        // possible user wanting nil drawn event box
+      if (qPtr->child == NULL)
+            delta_y -= qPtr->draw_box.h;
+      else  delta_y -= qPtr->child->mete_box.h;
+    }
+  }
 
   int tx, ty;
   GdkWindow *tl_window =
@@ -2151,7 +2568,9 @@ ui_bank_combo_run(PhxInterface *fport, GdkEvent *event, PhxObject *obj) {
   gdk_window_get_position(fport->parent_window, &cx, &cy);
   tx += cx, ty += cy;
 
-  gdk_window_move(obank->parent_window, tx + obtn->draw_box.x, ty + delta_y);
+  gdk_window_move(obank->parent_window,
+                           tx + obtn->mete_box.x + obtn->draw_box.x,
+                           ty + obtn->mete_box.y + obtn->draw_box.y + delta_y);
   gtk_widget_show_all(combo_popup);
 
     // following allows popup to behave like it has all needed events
@@ -2159,6 +2578,26 @@ ui_bank_combo_run(PhxInterface *fport, GdkEvent *event, PhxObject *obj) {
   GdkSeat *seat = gdk_display_get_default_seat(display);
   gdk_seat_grab(seat, obank->parent_window, GDK_SEAT_CAPABILITY_ALL, FALSE,
                                                  NULL, NULL, NULL, NULL);
+}
+
+// uses button's draw_box for actual objects of bank
+// bank's button's own draw_cb gets set to null
+// this makes bank a list of button->child drawing objects
+// where appended button's mete-draw box margins and draw_cb are ignored
+// making the bank's button an invisible draw box with an event_cb
+// where children are actual draw of bank members
+
+// allows user to select without a popup
+// extern event causes combo button display change
+void
+ui_bank_row_activate(PhxBank *ibank, int index) {
+
+    // do nothing if not in bank, index is always less than count
+  if ((unsigned)index >= (unsigned)(ibank->flag & 0x0FFFF))
+    return;
+  ibank->display_indices &= 0xFFFF0000U;
+  ibank->display_indices |= index;
+  bank_replace_combo_contents(ibank);
 }
 
 #pragma mark *** Events ***
@@ -2203,7 +2642,11 @@ mouse_drag_motion(PhxInterface *iface, GdkEvent *event) {
   int y = (int)(event->motion.y);
   if ( ((unsigned)x < (unsigned)iface->mete_box.w)
       && ((unsigned)y < (unsigned)iface->mete_box.h)) {
-    int ldx = iface->event_map[(x + (y * iface->mete_box.w))];
+    int ldx;
+    if (((iface->state >> 16) << OBJS_PWR) <= 256)
+      ldx = ((char*)iface->event_map)[(x + (y * iface->mete_box.w))];
+    else
+      ldx = ((short*)iface->event_map)[(x + (y * iface->mete_box.w))];
     obj = iface->objects[ldx];
   } else {
 // get window at pointer, querry if can accept
@@ -2225,8 +2668,8 @@ mouse_drag_motion(PhxInterface *iface, GdkEvent *event) {
       PhxObjectTextview *tv = (PhxObjectTextview*)obj;
 
       location temp;
-      temp.x = (int)event->motion.x - tv->draw_box.x;
-      temp.y = (int)event->motion.y - tv->draw_box.y;
+      temp.x = (int)event->motion.x - (tv->mete_box.x + tv->draw_box.x);
+      temp.y = (int)event->motion.y - (tv->mete_box.y + tv->draw_box.y);
       if (temp.x < 0)  temp.x = -1;
       if (temp.y < 0)  temp.y = -1;
       temp.x += tv->bin.x;
@@ -2327,69 +2770,92 @@ mouse_shift_click(PhxObjectTextview *tv, location *temp) {
 
 // will enter either mouse_shift_click or mouse_press_event
 // use inerim as start point (last active)
+// could reduce code size by function pointers, exception code
+// a ton of identical coding
 static void
 mouse_double_click(PhxObjectTextview *tv, int shift_click) {
 
   location *temp;
   int offset;
-  char find_ch;
   char ch0, *cPtr, *iPtr = &tv->string[tv->interim.offset];
   ch0 = *(cPtr = iPtr);
 
   if (ch0 == 0)  return;
 
-  if (isspace(ch0) != 0) {
-      // moves right, at least 1 found
-    find_ch = ch0;
-    do  ch0 = *(++cPtr);  while (find_ch == ch0);
-    offset = (unsigned)(cPtr - tv->string);
-    if ( (shift_click && (offset > tv->release.offset))
-       || !shift_click ) {
-      tv->release.offset = offset;
-      location_for_offset(tv, &tv->release);
-      temp = &tv->release;
-    } else if (shift_click && (offset == tv->release.offset))
-      temp = &tv->release;
-    if (tv->interim.offset != 0) {
-      cPtr = iPtr;
-      while ( ((cPtr - 1) >= tv->string)
-             && (*(cPtr - 1) == find_ch) )
-        --cPtr;
-      offset = (unsigned)(cPtr - tv->string);
-      if ( (shift_click && (offset < tv->insert.offset))
-         || !shift_click ) {
-        tv->insert.offset = offset;
-        location_for_offset(tv, &tv->insert);
-        temp = &tv->insert;
-      } else if (shift_click && (offset == tv->insert.offset))
-        temp = &tv->insert;
-    }
-    tv->interim.x = temp->x;
-    tv->interim.y = temp->y;
-    tv->interim.offset = temp->offset;
-    location_auto_scroll(tv, temp);
-    return;
-  }
+  unsigned char u8code[4], *uPtr;
+  int cdx = 0;
+  uPtr = u8code;
+  *(unsigned*)u8code = 0;
 
-  if ((isalnum(ch0) != 0) || (ch0 == '_')) {
+    // specific c languauge parsing, do before utf8 parse
+  if (ch0 == '_')  goto palnum;
+    /* if clicked on '{', select to forward enclosing '}' */
+    /* if clicked on '}', select to backward enclosing '{' */
+    /* if clicked on '(', select to forward enclosing ')' */
+    /* if clicked on ')', select to backward enclosing '(' */
+    /* if clicked on '[', select to forward enclosing ']' */
+    /* if clicked on ']', select to backward enclosing '[' */
+  //if (ch0 == '(') || (ch0 == ')')  goto ppsets; // 28,29
+  //if (ch0 == '[') || (ch0 == ']')  goto ppsets; // 5B,5D
+  //if (ch0 == '{') || (ch0 == '}')  goto ppsets; // 7B,7D
+
+  cdx = 0;
+  uPtr = u8code;
+  *(unsigned*)u8code = 0;
+  do
+    *uPtr = ch0, uPtr++, cdx++;
+  while (((ch0 = cPtr[cdx]) & 0x0C0) == 0x080);
+  cPtr += cdx;
+  if (iswspace(*(unsigned*)u8code) != 0)  goto pspace;
+  if (iswalnum(*(unsigned*)u8code) != 0)  goto palnum;
+  if (iswpunct(*(unsigned*)u8code) != 0)  goto ppunct;
+  return;
+
+pspace:
+  do {
+    cdx = 0;
+    uPtr = u8code;
+    *(unsigned*)u8code = 0;
     do
-      ch0 = *(++cPtr);
-    while ((isalnum(ch0) != 0) || (ch0 == '_'));
-    offset = (unsigned)(cPtr - tv->string);
-    if ( (shift_click && (offset > tv->release.offset))
-       || !shift_click ) {
-      tv->release.offset = offset;
-      location_for_offset(tv, &tv->release);
-      temp = &tv->release;
-    } else if (shift_click && (offset == tv->release.offset))
-      temp = &tv->release;
-    if (tv->insert.offset != 0) {
-      cPtr = iPtr;
-      while ((cPtr - 1) >= tv->string) {
-        ch0 = *(cPtr - 1);
-        if ((isalnum(ch0) == 0) && (ch0 != '_'))  break;
-        --cPtr;
-      }
+      *uPtr = ch0, uPtr++, cdx++;
+    while (((ch0 = cPtr[cdx]) & 0x0C0) == 0x080);
+    if (!iswspace(*(unsigned*)u8code))  break;
+    cPtr += cdx;
+  } while (1);
+    // assign release
+  offset = (unsigned)(cPtr - tv->string);
+  if ( (shift_click && (offset > tv->release.offset))
+     || !shift_click ) {
+    tv->release.offset = offset;
+    location_for_offset(tv, &tv->release);
+    temp = &tv->release;
+  } else if (shift_click && (offset == tv->release.offset))
+    temp = &tv->release;
+    // parse for backword looking insert codes
+  if ((iPtr - 1) >= tv->string) {
+    cPtr = iPtr;
+    do {
+      int cdx = -1;
+      ch0 = cPtr[cdx];
+      uPtr = u8code;
+      *(unsigned*)u8code = 0;
+      do {
+        *uPtr = ch0;
+        if ((ch0 & 0x0C0) != 0x080)  break;
+        if (((cdx - 1) < -4) || (&cPtr[(cdx - 1)] < tv->string))  break;
+        ch0 = cPtr[(--cdx)];
+          // move bytes to lower order bytes
+#ifndef __LITTLE_ENDIAN__
+        *(unsigned*)u8code >>= 8;
+#else
+        *(unsigned*)u8code <<= 8;
+#endif
+      } while (1);
+      if (!iswspace(*(unsigned*)u8code))  break;
+      ch0 = *(cPtr += cdx);
+    } while (1);
+    if (cPtr != iPtr) {
+        // assign insert
       offset = (unsigned)(cPtr - tv->string);
       if ( (shift_click && (offset < tv->insert.offset))
          || !shift_click ) {
@@ -2399,33 +2865,58 @@ mouse_double_click(PhxObjectTextview *tv, int shift_click) {
       } else if (shift_click && (offset == tv->insert.offset))
         temp = &tv->insert;
     }
-    tv->interim.x = temp->x;
-    tv->interim.y = temp->y;
-    tv->interim.offset = temp->offset;
-    location_auto_scroll(tv, temp);
-    return;
   }
+  tv->interim.x = temp->x;
+  tv->interim.y = temp->y;
+  tv->interim.offset = temp->offset;
+  location_auto_scroll(tv, temp);
+  return;
 
-// c_parsing, before punct, since punct based
-
-  if (ispunct(ch0) != 0) {
-      // moves right, at least 1 found
-    do  ch0 = *(++cPtr);  while (ispunct(ch0) != 0);
-    offset = (unsigned)(cPtr - tv->string);
-    if ( (shift_click && (offset > tv->release.offset))
-       || !shift_click ) {
-      tv->release.offset = offset;
-      location_for_offset(tv, &tv->release);
-      temp = &tv->release;
-    } else if (shift_click && (offset == tv->release.offset))
-      temp = &tv->release;
-    if (tv->interim.offset != 0) {
-      cPtr = iPtr;
-      while ((cPtr - 1) >= tv->string) {
-        ch0 = *(cPtr - 1);
-        if (ispunct(ch0) == 0)  break;
-        --cPtr;
-      }
+ppunct:
+  do {
+    cdx = 0;
+    uPtr = u8code;
+    *(unsigned*)u8code = 0;
+    do
+      *uPtr = ch0, uPtr++, cdx++;
+    while (((ch0 = cPtr[cdx]) & 0x0C0) == 0x080);
+    if (!iswpunct(*(unsigned*)u8code))  break;
+    cPtr += cdx;
+  } while (1);
+    // assign release
+  offset = (unsigned)(cPtr - tv->string);
+  if ( (shift_click && (offset > tv->release.offset))
+     || !shift_click ) {
+    tv->release.offset = offset;
+    location_for_offset(tv, &tv->release);
+    temp = &tv->release;
+  } else if (shift_click && (offset == tv->release.offset))
+    temp = &tv->release;
+    // parse for backword looking insert codes
+  if ((iPtr - 1) >= tv->string) {
+    cPtr = iPtr;
+    do {
+      int cdx = -1;
+      ch0 = cPtr[cdx];
+      uPtr = u8code;
+      *(unsigned*)u8code = 0;
+      do {
+        *uPtr = ch0;
+        if ((ch0 & 0x0C0) != 0x080)  break;
+        if (((cdx - 1) < -4) || (&cPtr[(cdx - 1)] < tv->string))  break;
+        ch0 = cPtr[(--cdx)];
+          // move bytes to lower order bytes
+#ifndef __LITTLE_ENDIAN__
+        *(unsigned*)u8code >>= 8;
+#else
+        *(unsigned*)u8code <<= 8;
+#endif
+      } while (1);
+      if (!iswpunct(*(unsigned*)u8code))  break;
+      ch0 = *(cPtr += cdx);
+    } while (1);
+    if (cPtr != iPtr) {
+        // assign insert
       offset = (unsigned)(cPtr - tv->string);
       if ( (shift_click && (offset < tv->insert.offset))
          || !shift_click ) {
@@ -2435,11 +2926,83 @@ mouse_double_click(PhxObjectTextview *tv, int shift_click) {
       } else if (shift_click && (offset == tv->insert.offset))
         temp = &tv->insert;
     }
+  }
+  tv->interim.x = temp->x;
+  tv->interim.y = temp->y;
+  tv->interim.offset = temp->offset;
+  location_auto_scroll(tv, temp);
+  return;
+
+palnum:
+  do {
+    if (ch0 == '_') {
+      ch0 = *(++cPtr);
+      continue;
+    }
+    cdx = 0;
+    uPtr = u8code;
+    *(unsigned*)u8code = 0;
+    do
+      *uPtr = ch0, uPtr++, cdx++;
+    while (((ch0 = cPtr[cdx]) & 0x0C0) == 0x080);
+    if (!iswalnum(*(unsigned*)u8code))  break;
+    cPtr += cdx;
+  } while (1);
+  if (cPtr != iPtr) {
+      // assign release
+    offset = (unsigned)(cPtr - tv->string);
+    if ( (shift_click && (offset > tv->release.offset))
+       || !shift_click ) {
+      tv->release.offset = offset;
+      location_for_offset(tv, &tv->release);
+      temp = &tv->release;
+    } else if (shift_click && (offset == tv->release.offset))
+      temp = &tv->release;
+      // parse for backward looking insert codes
+    if ((iPtr - 1) >= tv->string) {
+      cPtr = iPtr;
+      do {
+        int cdx = -1;
+        ch0 = cPtr[cdx];
+        if (ch0 == '_') {
+          cPtr += cdx;
+          if ((cPtr - 1) < tv->string)  break;
+          continue;
+        }
+        uPtr = u8code;
+        *(unsigned*)u8code = 0;
+        do {
+          *uPtr = ch0;
+          if ((ch0 & 0x0C0) != 0x080)  break;
+          if (((cdx - 1) < -4) || (&cPtr[(cdx - 1)] < tv->string))  break;
+          ch0 = cPtr[(--cdx)];
+            // move bytes to lower order bytes
+#ifndef __LITTLE_ENDIAN__
+          *(unsigned*)u8code >>= 8;
+#else
+          *(unsigned*)u8code <<= 8;
+#endif
+        } while (1);
+        if (!iswalnum(*(unsigned*)u8code))  break;
+        ch0 = *(cPtr += cdx);
+      } while (1);
+
+      if (cPtr != iPtr) {
+          // assign insert
+        offset = (unsigned)(cPtr - tv->string);
+        if ( (shift_click && (offset < tv->insert.offset))
+           || !shift_click ) {
+          tv->insert.offset = offset;
+          location_for_offset(tv, &tv->insert);
+          temp = &tv->insert;
+        } else if (shift_click && (offset == tv->insert.offset))
+          temp = &tv->insert;
+      }
+    }
     tv->interim.x = temp->x;
     tv->interim.y = temp->y;
     tv->interim.offset = temp->offset;
     location_auto_scroll(tv, temp);
-    return;
   }
 }
 
@@ -2515,8 +3078,8 @@ mouse_press_event_txt(PhxInterface *iface, GdkEvent *event, PhxObject *obj) {
   press_event_x = event->button.x;
   press_event_y = event->button.y;
 
-  tv->interim.x = (int)event->button.x - tv->draw_box.x;
-  tv->interim.y = (int)event->button.y - tv->draw_box.y;
+  tv->interim.x = (int)event->button.x - (tv->mete_box.x + tv->draw_box.x);
+  tv->interim.y = (int)event->button.y - (tv->mete_box.y + tv->draw_box.y);
   if (tv->interim.x < 0)  tv->interim.x = 0;
   if (tv->interim.y < 0)  tv->interim.y = 0;
   tv->interim.x += tv->bin.x;
@@ -2558,8 +3121,8 @@ mouse_release_event_txt(PhxInterface *iface, GdkEvent *event, PhxObject *obj) {
     if ((event->button.state & GDK_SHIFT_MASK) != 0) {
 
       location temp;
-      temp.x = x - tv->draw_box.x;
-      temp.y = y - tv->draw_box.y;
+      temp.x = x - (tv->mete_box.x + tv->draw_box.x);
+      temp.y = y - (tv->mete_box.y + tv->draw_box.y);
       if (temp.x < 0)  temp.x = 0;
       if (temp.y < 0)  temp.y = 0;
       temp.x += tv->bin.x;
@@ -2639,8 +3202,8 @@ mouse_motion_event_txt(PhxInterface *iface, GdkEvent *event, PhxObject *obj) {
     }
 
     location temp;
-    temp.x = (int)this_event_x - tv->draw_box.x;
-    temp.y = (int)this_event_y - tv->draw_box.y;
+    temp.x = (int)this_event_x - (tv->mete_box.x + tv->draw_box.x);
+    temp.y = (int)this_event_y - (tv->mete_box.y + tv->draw_box.y);
     if (temp.x < 0)  temp.x = 0;
     if (temp.y < 0)  temp.y = 0;
     temp.x += tv->bin.x;
@@ -2720,10 +3283,7 @@ key_movement_page_scroll(PhxObjectTextview *tv, short dirdis) {
         tv->bin.h = tv->bin.y + tv->draw_box.h;
 
         delta = tv->bin.h - ((tv->bin.h / font_em) * font_em);
-        if (delta != 0) {
-printf("key_movement_page_scroll %d\n", delta);
-          tv->bin.y += font_em;
-        }
+        if (delta != 0)  tv->bin.y += font_em;
       }
       if (tv->bin.y < 0)  tv->bin.y = 0;
     }
@@ -2751,36 +3311,89 @@ key_movement_control(PhxObjectTextview *tv, location *active,
   ch0 = *cPtr;
     // horizontal movement to begin/end of previous/next identifiers
   if ((dirdis & 3) == 0) {
+    unsigned char u8code[4], *uPtr;
+    int cdx;
     if (dirdis < 0) {  // GDK_KEY_Left
       if ((cPtr - 1) < tv->string)  return TRUE;
-      ch0 = *(--cPtr);
-      if ((isalnum(ch0) == 0) && (ch0 != '_'))
-        do {
-          if ((cPtr - 1) < tv->string)  goto mcl;
-          ch0 = *(cPtr - 1);
-          if ((isalnum(ch0) != 0) || (ch0 == '_'))  break;
-          --cPtr;
-        } while (1);
       do {
-        if ((cPtr - 1) < tv->string)  break;
-        ch0 = *(cPtr - 1);
-        if ((isalnum(ch0) == 0) && (ch0 != '_'))  break;
-        --cPtr;
+        cdx = -1;
+        ch0 = cPtr[cdx];
+        if (ch0 == '_')  break;
+        uPtr = u8code;
+        *(unsigned*)u8code = 0;
+        do {
+          *uPtr = ch0;
+          if ((ch0 & 0x0C0) != 0x080)  break;
+          if (((cdx - 1) < -4) || (&cPtr[(cdx - 1)] < tv->string))  break;
+          ch0 = cPtr[(--cdx)];
+            // move bytes to lower order bytes
+#ifndef __LITTLE_ENDIAN__
+          *(unsigned*)u8code >>= 8;
+#else
+          *(unsigned*)u8code <<= 8;
+#endif
+        } while (1);
+        if (iswalnum(*(unsigned*)u8code))  break;
+        cPtr += cdx;
+      } while ((cPtr - 1) >= tv->string);
+      do {
+        cdx = -1;
+        ch0 = cPtr[cdx];
+        if (ch0 == '_') {
+          cPtr += cdx;
+          if ((cPtr - 1) < tv->string)  break;
+          continue;
+        }
+        uPtr = u8code;
+        *(unsigned*)u8code = 0;
+        do {
+          *uPtr = ch0;
+          if ((ch0 & 0x0C0) != 0x080)  break;
+          if (((cdx - 1) < -4) || (&cPtr[(cdx - 1)] < tv->string))  break;
+          ch0 = cPtr[(--cdx)];
+            // move bytes to lower order bytes
+#ifndef __LITTLE_ENDIAN__
+          *(unsigned*)u8code >>= 8;
+#else
+          *(unsigned*)u8code <<= 8;
+#endif
+        } while (1);
+        if (!iswalnum(*(unsigned*)u8code))  break;
+        cPtr += cdx;
       } while (1);
-mcl:  offset = (int)(cPtr - tv->string);
+      offset = (int)(cPtr - tv->string);
       if ( (shift_click && (offset < active->offset))
           || !shift_click )
         goto mc0;
     } else {           // GDK_KEY_Right
       if (ch0 == 0)  return TRUE;
-      if ((isalnum(ch0) == 0) && (ch0 != '_'))
-        do {
-          if ((ch0 = *(++cPtr)) == 0)  goto mcr;
-        } while ((isalnum(ch0) == 0) && (ch0 != '_'));
       do {
-        if ((ch0 = *(++cPtr)) == 0)  break;
-      } while ((isalnum(ch0) != 0) || (ch0 == '_'));
-mcr:  offset = (int)(cPtr - tv->string);
+        if (ch0 == '_')  break;
+        cdx = 0;
+        uPtr = u8code;
+        *(unsigned*)u8code = 0;
+        do
+          *uPtr = ch0, uPtr++, cdx++;
+        while (((ch0 = cPtr[cdx]) & 0x0C0) == 0x080);
+        if (iswalnum(*(unsigned*)u8code))  break;
+        ch0 = *(cPtr += cdx);
+      } while (1);
+      ch0 = *cPtr;
+      do {
+        if (ch0 == '_') {
+          ch0 = *(++cPtr);
+          continue;
+        }
+        cdx = 0;
+        uPtr = u8code;
+        *(unsigned*)u8code = 0;
+        do
+          *uPtr = ch0, uPtr++, cdx++;
+        while (((ch0 = cPtr[cdx]) & 0x0C0) == 0x080);
+        if (!iswalnum(*(unsigned*)u8code))  break;
+        ch0 = *(cPtr += cdx);
+      } while (1);
+      offset = (int)(cPtr - tv->string);
       if ( (shift_click && (offset > active->offset))
           || !shift_click ) {
   mc0:  active->offset = offset;
@@ -2793,12 +3406,24 @@ mcr:  offset = (int)(cPtr - tv->string);
 
   if ((dirdis & 3) == 2) {
     char *tempPtr;
+    unsigned char u8code[4], *uPtr;
+    int cdx;
     if (dirdis < 0) {  // GDK_KEY_Home
+        // move to first non-blank on line
       if (active->offset != 0) {
         tempPtr = memrchr(tv->string, '\n', active->offset);
         tempPtr = (tempPtr == NULL) ? tv->string : (tempPtr + 1);
-        if ((ch0 = *tempPtr) != 0)
-          while (isblank(ch0))  ch0 = *(++tempPtr);
+        do {
+          cdx = 0;
+          uPtr = u8code;
+          *(unsigned*)u8code = 0;
+          if ((ch0 = *tempPtr) == 0)  break;
+          do
+            *uPtr = ch0, uPtr++, cdx++;
+          while (((ch0 = tempPtr[cdx]) & 0x0C0) == 0x080);
+          if (!iswblank(*(unsigned*)u8code))  break;
+          tempPtr += cdx;
+        } while (1);
         active->offset = (int)(tempPtr - tv->string);
           // sum of glyph advances
         location_for_offset(tv, active);
@@ -2807,12 +3432,28 @@ mcr:  offset = (int)(cPtr - tv->string);
         tv->bin.w = tv->draw_box.w;
       }
     } else {           // GDK_KEY_End
+        // move to last non-blank on line
       tempPtr = strchr(cPtr, '\n');
       if (tempPtr == NULL) tempPtr = cPtr + (int)strlen(cPtr);
       while ((tempPtr - 1) >= cPtr) {
-        ch0 = *(tempPtr - 1);
-        if (!isblank(ch0))  break;
-        tempPtr--;
+        cdx = -1;
+        uPtr = u8code;
+        *(unsigned*)u8code = 0;
+        ch0 = tempPtr[cdx];
+        do {
+          *uPtr = ch0;
+          if ((ch0 & 0x0C0) != 0x080)  break;
+          if (((cdx - 1) < -4) || (&tempPtr[(cdx - 1)] < cPtr))  break;
+          ch0 = tempPtr[(--cdx)];
+            // move bytes to lower order bytes
+#ifndef __LITTLE_ENDIAN__
+          *(unsigned*)u8code >>= 8;
+#else
+          *(unsigned*)u8code <<= 8;
+#endif
+        } while (1);
+        if (!iswblank(*(unsigned*)u8code))  break;
+        tempPtr += cdx;
       }
       active->offset = (int)(tempPtr - tv->string);
         // sum of glyph advances
@@ -2902,9 +3543,11 @@ NWSE:   if (dirdis < 0)
 
   if ((dirdis & 3) == 0) {
     if (dirdis < 0) {  // GDK_KEY_Left
-      if (active->offset != 0)              active->offset--;
+      if (active->offset != 0)
+        while ((tv->string[(--active->offset)] & 0x0C0) == 0x080) ;
     } else {           // GDK_KEY_Right
-      if (tv->string[active->offset] != 0)  active->offset++;
+      if (tv->string[active->offset] != 0)
+        while ((tv->string[(++active->offset)] & 0x0C0) == 0x080) ;
     }
     location_for_offset(tv, active);
     location_auto_scroll(tv, active);
@@ -2983,15 +3626,14 @@ kmp_v:
 static gboolean
 key_press_event(PhxInterface *iface, GdkEvent *event, PhxObject *obj) {
 
-  short state = event->key.state
-                 & (GDK_MOD1_MASK | GDK_CONTROL_MASK | GDK_SHIFT_MASK);
-  int ch = event->key.keyval;
-
-  if ( (obj->type != PHX_TEXTVIEW) && (obj->type != PHX_ENTRY) ) {
+  if ( (obj->type != PHX_TEXTVIEW) && (obj->type != PHX_ENTRY) )
     return FALSE;
-  }
 
   PhxObjectTextview *tv = (PhxObjectTextview*)obj;
+
+  int ch = event->key.keyval;
+  short state = event->key.state
+                 & (GDK_MOD1_MASK | GDK_CONTROL_MASK | GDK_SHIFT_MASK);
 
   if ( (ch >= GDK_KEY_space) && (ch <= GDK_KEY_asciitilde) ) {
     if (state & GDK_CONTROL_MASK) {
@@ -3068,7 +3710,7 @@ key_press_event(PhxInterface *iface, GdkEvent *event, PhxObject *obj) {
 
     case GDK_KEY_Insert:                      // 0xff63
     case GDK_KEY_KP_Insert:                   // 0xff9e
-      tv->state ^= (0x00000001 << (SHIFT + 10));
+      tv->state ^= STATE_BIT_KEY_INSERT;
       goto redraw;
 
     case GDK_KEY_Menu:                        // 0xff67
@@ -3108,7 +3750,7 @@ key_press_event(PhxInterface *iface, GdkEvent *event, PhxObject *obj) {
 
     case GDK_KEY_Delete:                      // 0xffff
     case GDK_KEY_KP_Delete:                   // 0xff9f
-      tv->state ^= (0x00000001 << (SHIFT + 11));
+      tv->state ^= STATE_BIT_KEY_DELETE;
       text_buffer_delete(tv);
       goto redraw;
 
@@ -3172,8 +3814,12 @@ event_meter(PhxInterface *iface, GdkEvent *event, void *widget) {
     int y = (int)(event->button.y);
     int ldx = 0;
     if ( ((unsigned)x < (unsigned)iface->mete_box.w)
-        && ((unsigned)y < (unsigned)iface->mete_box.h))
-      ldx = iface->event_map[(x + (y * iface->mete_box.w))];
+        && ((unsigned)y < (unsigned)iface->mete_box.h)) {
+      if (((iface->state >> 16) << OBJS_PWR) <= 256)
+        ldx = ((char*)iface->event_map)[(x + (y * iface->mete_box.w))];
+      else
+        ldx = ((short*)iface->event_map)[(x + (y * iface->mete_box.w))];
+    }
     PhxObject *obj = iface->objects[ldx];
 
     if ((event->type >= GDK_BUTTON_PRESS)
@@ -3198,7 +3844,7 @@ event_meter(PhxInterface *iface, GdkEvent *event, void *widget) {
           // queue_redraw
         cairo_region_t *crr;
         crr = cairo_region_create_rectangle(
-                 (cairo_rectangle_int_t *)&obj->draw_box);
+                 (cairo_rectangle_int_t *)&obj->mete_box);
         gdk_window_invalidate_region(event->button.window, crr, FALSE);
         cairo_region_destroy(crr);
           // perform action
@@ -3229,7 +3875,7 @@ event_meter(PhxInterface *iface, GdkEvent *event, void *widget) {
           // queue_redraw
         cairo_region_t *crr;
         crr = cairo_region_create_rectangle(
-                 (cairo_rectangle_int_t *)&obj->draw_box);
+                 (cairo_rectangle_int_t *)&obj->mete_box);
         gdk_window_invalidate_region(event->button.window, crr, FALSE);
         cairo_region_destroy(crr);
         if (((PhxObjectButton*)obj)->_event_cb != NULL) {
@@ -3294,8 +3940,12 @@ event_meter(PhxInterface *iface, GdkEvent *event, void *widget) {
         if (iface->parent_window == window) {
           int ldx = 0;
           if ( ((unsigned)x < (unsigned)iface->mete_box.w)
-              && ((unsigned)y < (unsigned)iface->mete_box.h))
-            ldx = iface->event_map[(x + (y * iface->mete_box.w))];
+              && ((unsigned)y < (unsigned)iface->mete_box.h)) {
+            if (((iface->state >> 16) << OBJS_PWR) <= 256)
+              ldx = ((char*)iface->event_map)[(x + (y * iface->mete_box.w))];
+            else
+              ldx = ((short*)iface->event_map)[(x + (y * iface->mete_box.w))];
+          }
           PhxObject *obj = iface->objects[ldx];
           if (ldx != 0) {
             GdkCursor *cursor = gdk_window_get_cursor(window);
@@ -3307,6 +3957,7 @@ event_meter(PhxInterface *iface, GdkEvent *event, void *widget) {
               g_object_unref((void*)cursor);
             }
             iface->has_focus = obj;
+            sensitive_set(obj, TRUE);
             return TRUE;
           }
         }
