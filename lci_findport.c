@@ -516,7 +516,7 @@ lci_findport_receiver_text(LCIFindPort *findPort, char ch,
       text_buffer_cut(receiver);
       cairo_region_t *crr;
       crr = cairo_region_create_rectangle(
-               (cairo_rectangle_int_t *)&receiver->draw_box);
+               (cairo_rectangle_int_t *)&receiver->mete_box);
       gdk_window_invalidate_region(findPort->parent_window, crr, FALSE);
       cairo_region_destroy(crr);
     }
@@ -528,7 +528,7 @@ lci_findport_receiver_text(LCIFindPort *findPort, char ch,
       text_buffer_insert(receiver, data, sz);
       cairo_region_t *crr;
       crr = cairo_region_create_rectangle(
-               (cairo_rectangle_int_t *)&receiver->draw_box);
+               (cairo_rectangle_int_t *)&receiver->mete_box);
       gdk_window_invalidate_region(findPort->parent_window, crr, FALSE);
       cairo_region_destroy(crr);
     }
